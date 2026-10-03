@@ -1,7 +1,7 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "1.5";
+const VERSION = "1.6";
 const REFRESH_MS = window.__REFRESH_MS || 300000; // open a fresh connection every ~5 min (sessions went silent after ~7 min)
 const WAITS = [1000, 1800, 2800];
 const WAIT_NAMES = ["一般", "長一點（建議）", "很長"];
@@ -100,8 +100,22 @@ const Calls = {
 
 const Errs = {
   all() { try { return JSON.parse(localStorage.getItem("desk_errors") || "[]"); } catch (e) { return []; } },
-  put(l) { try { localStorage.setItem("desk_errors", JSON.stringify(l.slice(0, 600))); } catch (e) {} },
-  addMany(items) { const l = this.all(); this.put(items.concat(l)); },
+  put(l) { try { localStorage.setItem("desk_errors", JSON.stringify(l)); } catch (e) {} },
+  key(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); },
+  /** The same correction showing up again only raises its counter and moves it back to "to review". */
+  addMany(items) {
+    const l = this.all();
+    for (const n of items) {
+      const k = this.key(n.better);
+      if (!k) continue;
+      const i = l.findIndex(x => this.key(x.better) === k);
+      if (i >= 0) {
+        const o = l.splice(i, 1)[0];
+        l.unshift(Object.assign(o, { lt: n.ts, count: (o.count || 1) + 1, done: false, said: n.said, why: n.why || o.why, sev: Math.max(o.sev || 2, n.sev || 2), persona: n.persona, topic: n.topic }));
+      } else l.unshift(Object.assign({}, n, { lt: n.ts, count: 1 }));
+    }
+    this.put(l);
+  },
   setDone(id, v) { const l = this.all(); const r = l.find(x => x.id === id); if (r) { r.done = v; this.put(l); } },
   remove(id) { this.put(this.all().filter(x => x.id !== id)); },
   clear() { try { localStorage.removeItem("desk_errors"); } catch (e) {} }
@@ -203,8 +217,11 @@ function buildStart(root) {
     grid.appendChild(el);
   });
   const styleSel = h("select", { class: "field" },
-    h("option", { value: "chatty", text: "活潑親切（愛笑、愛開玩笑）" }),
-    h("option", { value: "focused", text: "簡潔直接（比較正經）" }));
+    h("option", { value: "chatty", text: "活潑親切（愛聊生活小事）" }),
+    h("option", { value: "focused", text: "簡潔直接（比較正經）" }),
+    h("option", { value: "gentle", text: "溫柔鼓勵（多肯定、有耐心）" }),
+    h("option", { value: "curious", text: "愛追問（會多問你幾句）" }),
+    h("option", { value: "funny", text: "幽默風趣（愛開玩笑）" }));
   styleSel.value = P.style;
   styleSel.addEventListener("change", () => { P.style = styleSel.value; savePrefs(); });
   const speedSel = h("select", { class: "field" }, SPEED_NAMES.map((n, i) => h("option", { value: String(i), text: n })));
@@ -261,7 +278,7 @@ function logLine(msg) { if (D) D.log.push("[" + ((Date.now() - D.t0) / 1000).toF
 async function beginTalk() {
   if (!P.key) { toast("還沒有 Gemini 金鑰，請先到「系統」頁設定"); go("system"); return; }
   const ctx = ensureAC();
-  const persona = resolvePersona(P.persona), topic = resolveTopic(P.topicId, P.customTopics);
+  const persona = drawPersona(P.persona), topic = drawTopic(P.topicId, P.customTopics);
   D = { persona, topic, level: P.level, manual: P.manual, t0: Date.now(), startMs: Date.now(), msgs: [], muted: false, live: null, stream: null,
     ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "" };
   msgEls = new Map();

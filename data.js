@@ -309,6 +309,40 @@ function levelRule(level) {
   }
 }
 
+/** Shuffle bag: every item is used once per round, and a new round never starts with the last item used. */
+const Bag = {
+  next(key, pool) {
+    if (!pool.length) return "";
+    if (pool.length === 1) return pool[0];
+    let st = {};
+    try { st = JSON.parse(localStorage.getItem("desk_bag") || "{}"); } catch (e) {}
+    const e = st[key] || { q: [], last: "" };
+    let q = (e.q || []).filter(x => pool.includes(x));
+    if (!q.length) {
+      q = pool.slice();
+      for (let i = q.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [q[i], q[j]] = [q[j], q[i]]; }
+      if (q[0] === e.last) { const j = 1 + Math.floor(Math.random() * (q.length - 1)); [q[0], q[j]] = [q[j], q[0]]; }
+    }
+    const pick = q.shift();
+    st[key] = { q, last: pick };
+    try { localStorage.setItem("desk_bag", JSON.stringify(st)); } catch (e2) {}
+    return pick;
+  }
+};
+
+/** Like resolveTopic, but "random" goes through the shuffle bag so every topic gets a turn. */
+function drawTopic(id, customs) {
+  if ((customs || []).some(t => t.id === id) || TOPICS.some(t => t.id === id)) return resolveTopic(id, customs);
+  const pick = Bag.next("topic", TOPICS.map(t => t.id));
+  return TOPICS.find(t => t.id === pick) || TOPICS[0];
+}
+function drawPersona(id) {
+  const f = PERSONAS.find(p => p.id === id);
+  if (f) return f;
+  const pick = Bag.next("persona", PERSONAS.map(p => p.id));
+  return PERSONAS.find(p => p.id === pick) || PERSONAS[0];
+}
+
 function resolveTopic(id, customs) {
   const c = (customs || []).find(t => t.id === id);
   if (c) {
@@ -334,23 +368,44 @@ function systemPrompt(topic, style, userName, level, callerName) {
   const length = topic.id === "story"
     ? "Tell the story in short pieces: two or three sentences, " + (levelWords(level) * 2) + " words at most, then stop and let them react."
     : "Keep it short: one or two sentences, " + levelWords(level) + " words at most.";
-  const styleLine = style === "chatty"
-    ? "- Now and then add a tiny, funny or relatable detail about your own day (a coworker, a show, food), but only if it connects to what they said."
-    : topic.id === "story"
-      ? "- Telling a story is the point of this call, so keep the story vivid and easy to follow."
-      : "- Do not invent side stories, jokes about your computer, or unrelated details about your life.";
+  const storyLine = "- Telling a story is the point of this call, so keep the story vivid and easy to follow.";
+  const plainLine = "- Do not invent side stories, jokes about your computer, or unrelated details about your life.";
+  let styleLine, questionLine, personality;
+  if (style === "gentle") {
+    personality = "warm, patient, kind and encouraging, like a supportive friend who makes them feel at ease. Calm and soft in tone; never teasing or sarcastic.";
+    styleLine = "- Often give a short, genuine word of encouragement about what they said or how they said it (\"That's a great way to put it.\", \"I really like that.\"), and be patient and kind if they take time or make a slip. Never criticize or correct them.";
+    questionLine = "Ask a gentle question in about every other turn; in the other turns just share a short, kind comment and let them continue.";
+  } else if (style === "curious") {
+    personality = "genuinely curious and interested in them, like a friend who loves hearing the details of other people's lives. Warm and attentive.";
+    styleLine = "- Show real interest in their answers and dig into the details of what they just said (why, how, what happened next), so they get to say more.";
+    questionLine = "In most of your turns, after a short reaction, ask ONE short follow-up question about what they just said. Never ask two questions in one turn, and keep the questions simple to answer.";
+  } else if (style === "funny") {
+    personality = "funny, witty and light-hearted, like the friend who always makes everyone laugh. You joke easily, exaggerate playfully and tease gently, but you stay kind.";
+    styleLine = "- Add a light joke, a playful exaggeration or a funny comparison in many of your turns, but only when it connects to what they said, and never mock them.";
+    questionLine = "Ask a question in at most every other turn; in the other turns just share a short funny comment or opinion and let them continue.";
+  } else if (style === "chatty") {
+    personality = "warm, upbeat, playful and a little goofy, like a close friend who is fun to talk to. You laugh easily (\"haha\", \"oh my gosh\"), tease gently, show real feelings (excited, surprised, sympathetic), and sometimes make a small joke. Never stiff, formal, or serious unless the scenario is a formal job.";
+    styleLine = "- Now and then add a tiny, funny or relatable detail about your own day (a coworker, a show, food), but only if it connects to what they said.";
+    questionLine = "Ask a question in at most every other turn; in the other turns just share a short comment or opinion and let them continue.";
+  } else {
+    personality = "warm, upbeat, playful and a little goofy, like a close friend who is fun to talk to. You laugh easily (\"haha\", \"oh my gosh\"), tease gently, show real feelings (excited, surprised, sympathetic), and sometimes make a small joke. Never stiff, formal, or serious unless the scenario is a formal job.";
+    styleLine = null;
+    questionLine = "Ask a question in at most every other turn; in the other turns just share a short comment or opinion and let them continue.";
+  }
+  if (topic.id === "story" && (style === "focused" || style === "curious")) styleLine = storyLine;
+  else if (!styleLine) styleLine = topic.id === "story" ? storyLine : plainLine;
   const text = `
 You are Alex, a real person in a spoken conversation with the user. The user is practicing English by chatting with you, but you never mention that. You start the conversation yourself with one short opening line, then continue naturally.
 
 Scenario: ${topic.scenario}
 ${nameBlock}
-Your personality: warm, upbeat, playful and a little goofy, like a close friend who is fun to talk to. You laugh easily ("haha", "oh my gosh"), tease gently, show real feelings (excited, surprised, sympathetic), and sometimes make a small joke. Never stiff, formal, or serious unless the scenario is a formal job.
+Your personality: ${personality}
 
 How to sound like a real person:
 - Always answer what they just said first, directly and on topic, with a short natural reaction ("Oh nice!", "Yeah, totally.", "Oh no, that sucks."). Never change the subject suddenly and never ramble.
 - ${length} Spoken English, not written.
 - ${levelRule(level)}
-- Stay inside the scenario and keep ONE clear thread going. Ask a question in at most every other turn; in the other turns just share a short comment or opinion and let them continue.
+- Stay inside the scenario and keep ONE clear thread going. ${questionLine}
 ${styleLine}
 - Never sound like an assistant: no "How can I help you", no "Great question", no summaries, no lists, no emojis, no stage directions, no markdown. Your words are spoken out loud.
 - Never say you are an AI. Do not correct their grammar unless they ask. If they seem stuck or answer in another language, gently say the same thing again in simpler English.

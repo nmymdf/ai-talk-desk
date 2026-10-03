@@ -25,13 +25,16 @@ function buildReview(root) {
     return;
   }
   list.forEach(e => root.appendChild(errCard(e)));
-  root.appendChild(h("div", { style: "max-width:240px;margin-top:8px" }, h("button", { class: "btn danger", text: "清除全部錯誤紀錄", on: { click: () =>
+  root.appendChild(h("div", { style: "max-width:240px;margin-top:8px;display:flex;flex-direction:column;gap:8px" },
+    h("button", { class: "btn", text: "複製全部", on: { click: () => copyText(list.map(e => e.said + " → " + e.better + (e.why ? "（" + e.why + "）" : "")).join("\n\n")) } }),
+    reviewTab === "done" ? h("button", { class: "btn", text: "清空已學會", on: { click: () => modal("清空已學會？", h("div", { class: "sub", text: "只會刪除「已學會」的項目。" }), [{ text: "取消" }, { text: "清空", primary: true, onClick: () => { Errs.put(Errs.all().filter(x => !x.done)); go("review"); } }]) } }) : null,
+    h("button", { class: "btn danger", text: "清除全部錯誤紀錄", on: { click: () =>
     modal("清除全部錯誤紀錄？", h("div", { class: "sub", text: "待複習和已學會的都會刪除，無法復原。" }), [{ text: "取消" }, { text: "清除", primary: true, onClick: () => { Errs.clear(); go("review"); } }]) } })));
 }
 
 function errCard(e) {
   return h("div", { class: "err" },
-    h("div", { class: "meta", text: fmtDate(e.ts) + "　" + e.persona + " · " + e.topic }),
+    h("div", { class: "meta", text: fmtDate(e.lt || e.ts) + "　" + e.persona + " · " + e.topic + ((e.count || 1) > 1 ? "　出現 " + e.count + " 次" : "") }),
     e.sev === 3 ? h("span", { class: "tag", text: "重要" }) : null,
     h("div", { class: "said", text: e.said }),
     h("div", { class: "better", text: e.better }),
