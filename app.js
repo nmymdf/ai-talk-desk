@@ -1,7 +1,7 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "1.4";
+const VERSION = "1.5";
 const REFRESH_MS = window.__REFRESH_MS || 300000; // open a fresh connection every ~5 min (sessions went silent after ~7 min)
 const WAITS = [1000, 1800, 2800];
 const WAIT_NAMES = ["一般", "長一點（建議）", "很長"];
@@ -387,20 +387,64 @@ function endTalk() {
   if (dur >= 20 && myMsgs.length) { try { Calls.add(rec); } catch (e) {} }
   if (myMsgs.length >= 2 && myWords >= 12 && P.key) {
     d.analysis = "loading";
-    geminiGenerate(P.key, MODELS, DESK_FEEDBACK_PROMPT + "\n" + text, true).then(t => {
-      t = t.trim().replace(/^```json/, "").replace(/^```/, "").replace(/```$/, "").trim();
-      const o = JSON.parse(t);
-      const errors = (Array.isArray(o.errors) ? o.errors : []).filter(x => x && x.said && x.better).slice(0, 4)
-        .map(x => ({ said: String(x.said), better: String(x.better), why: String(x.why || "") }));
-      d.analysis = { praise: String(o.praise || ""), errors, word: String(o.word || "") };
-      if (errors.length) Errs.addMany(errors.map((x, i) => Object.assign({ id: d.startMs + "-" + i, ts: d.startMs, persona: d.persona.name, topic: d.topic.label, done: false }, x)));
-      try { const l = Calls.all(); const r = l.find(x => x.ts === d.startMs); if (r) { r.feedback = JSON.stringify(d.analysis); Calls.put(l); } } catch (e) {}
+    analyzeTalk(d).then(res => {
+      d.analysis = res;
+      if (res.errors.length) Errs.addMany(res.errors.map((x, i) => Object.assign({ id: d.startMs + "-" + i, ts: d.startMs, persona: d.persona.name, topic: d.topic.label, done: false }, x)));
+      try { const l = Calls.all(); const r = l.find(x => x.ts === d.startMs); if (r) { r.feedback = JSON.stringify(res); Calls.put(l); } } catch (e) {}
       paintPanel(); paintBar();
     }).catch((e) => { d.analysis = { failed: true, msg: (e && e.message) || String(e) }; paintPanel(); });
   } else {
     d.analysis = { short: true };
   }
   paintHeader(); paintBar(); paintPanel();
+}
+
+// ---- after-talk analysis: scan the whole conversation part by part, keep only the most serious mistakes
+
+const MAX_FIX = 5;           // corrections shown (the most serious ones in the whole conversation)
+const TURNS_PER_PART = 8;    // learner turns checked together
+
+const normText = (s) => String(s).toLowerCase().replace(/[^a-z0-9' ]+/g, " ").replace(/\s+/g, " ").trim();
+function parseJson(t) { return JSON.parse(String(t).trim().replace(/^```json/, "").replace(/^```/, "").replace(/```$/, "").trim()); }
+
+async function analyzeTalk(d) {
+  const turns = d.msgs.filter(m => m.text.trim());
+  const parts = []; let cur = [], n = 0;
+  for (const m of turns) { cur.push(m); if (m.who === "me" && ++n >= TURNS_PER_PART) { parts.push(cur); cur = []; n = 0; } }
+  if (cur.some(m => m.who === "me")) { if (n < 3 && parts.length) parts[parts.length - 1].push(...cur); else parts.push(cur); }
+  const found = []; let okParts = 0, lastErr = null, order = 0;
+  for (let p = 0; p < parts.length; p++) {
+    d.progress = (p + 1) + " / " + parts.length; paintPanel();
+    const text = parts[p].map(m => (m.who === "me" ? "Learner: " : "Partner: ") + m.text.trim()).join("\n");
+    const mine = normText(parts[p].filter(m => m.who === "me").map(m => m.text).join(" "));
+    let o = null;
+    for (let tryNo = 0; tryNo < 2 && !o; tryNo++) {
+      try { o = parseJson(await geminiGenerate(P.key, MODELS, DESK_ERRORS_PROMPT + "\n" + text, true)); }
+      catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 1500)); }
+    }
+    if (!o) continue;
+    okParts++;
+    for (const x of (Array.isArray(o.errors) ? o.errors : [])) {
+      if (!x || !x.said || !x.better) continue;
+      const said = normText(x.said);
+      if (said.length < 3 || !mine.includes(said)) continue;          // must really be something the learner said
+      if (said === normText(x.better)) continue;
+      const sev = Number(x.sev) >= 3 ? 3 : 2;
+      found.push({ said: String(x.said).trim(), better: String(x.better).trim(), why: String(x.why || "").trim(), sev, order: order++ });
+    }
+  }
+  if (!okParts) throw lastErr || new Error("分析失敗");
+  const seen = new Set(), uniq = [];
+  for (const f of found) { const k = normText(f.said); if (!seen.has(k)) { seen.add(k); uniq.push(f); } }
+  uniq.sort((a, b) => b.sev - a.sev || a.order - b.order);
+  const errors = uniq.slice(0, MAX_FIX).map(({ order, ...rest }) => rest);
+  let praise = "", word = "";
+  try {
+    const mineText = turns.filter(m => m.who === "me").map(m => m.text.trim()).join("\n").slice(0, 6000);
+    const s = parseJson(await geminiGenerate(P.key, MODELS, DESK_SUMMARY_PROMPT + "\n" + mineText, true));
+    praise = String(s.praise || ""); word = String(s.word || "");
+  } catch (e) {}
+  return { praise, errors, word };
 }
 
 function closeTalk() { $("talk").classList.add("hidden"); $("talk").replaceChildren(); }
@@ -552,7 +596,7 @@ function paintPanel() {
   const a = D.analysis;
   if (D.tab === "fix") {
     if (!D.ended) body.replaceChildren(h("div", { class: "empty", style: "white-space:pre-line;margin-top:40px", text: "放心說，說錯也沒關係。\n對話中不會打斷你，\n結束後這裡會列出幾個值得注意的地方。" }));
-    else if (a === "loading" || !a) body.replaceChildren(h("div", { class: "empty", style: "margin-top:40px", text: "正在整理這次的重點…" }));
+    else if (a === "loading" || !a) body.replaceChildren(h("div", { class: "empty", style: "margin-top:40px", text: "正在整理這次的重點…" + (D.progress ? "（第 " + D.progress + " 段）" : "") }));
     else if (a.short) body.replaceChildren(h("div", { class: "empty", style: "margin-top:40px;white-space:pre-line", text: "這次說的內容太少，\n沒有可以分析的地方。\n下次多聊幾句吧！" }));
     else if (a.failed) body.replaceChildren(h("div", { class: "empty", style: "margin-top:40px;white-space:pre-line", text: "這次的分析沒有成功。\n" + a.msg.slice(0, 200) }));
     else {
@@ -560,7 +604,7 @@ function paintPanel() {
       if (a.praise) kids.push(h("div", { class: "praise", text: "👍 " + a.praise }));
       if (a.errors.length) {
         kids.push(h("div", { class: "ptitle", text: "值得注意的地方（已存到「錯誤複習」）" }));
-        a.errors.forEach(x => kids.push(h("div", { class: "fix" }, h("div", { class: "said", text: x.said }), h("div", { class: "better", text: x.better }), x.why ? h("div", { class: "why", text: x.why }) : null)));
+        a.errors.forEach(x => kids.push(h("div", { class: "fix" }, x.sev === 3 ? h("span", { class: "tag", text: "重要" }) : null, h("div", { class: "said", text: x.said }), h("div", { class: "better", text: x.better }), x.why ? h("div", { class: "why", text: x.why }) : null)));
       } else kids.push(h("div", { class: "sub", style: "line-height:1.6", text: "這次沒有需要特別提醒的地方，說得很好！" }));
       body.replaceChildren(...kids);
     }

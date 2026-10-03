@@ -32,6 +32,7 @@ function buildReview(root) {
 function errCard(e) {
   return h("div", { class: "err" },
     h("div", { class: "meta", text: fmtDate(e.ts) + "　" + e.persona + " · " + e.topic }),
+    e.sev === 3 ? h("span", { class: "tag", text: "重要" }) : null,
     h("div", { class: "said", text: e.said }),
     h("div", { class: "better", text: e.better }),
     e.why ? h("div", { class: "why", text: e.why }) : null,
