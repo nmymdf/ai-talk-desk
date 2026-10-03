@@ -96,7 +96,7 @@ class LiveSession {
           outputAudioTranscription: {},
           contextWindowCompression: { slidingWindow: {} },
           realtimeInputConfig: this.o.manual ? { automaticActivityDetection: { disabled: true } }
-            : (this.useVad ? { automaticActivityDetection: { endOfSpeechSensitivity: "END_SENSITIVITY_LOW", prefixPaddingMs: 120, silenceDurationMs: this.o.silenceMs || 1800 } } : undefined)
+            : (this.useVad ? { automaticActivityDetection: { prefixPaddingMs: 120, silenceDurationMs: this.o.silenceMs || 1800 } } : undefined)
         }
       }));
     };
@@ -141,6 +141,7 @@ class LiveSession {
   handle(raw, model) {
     let o;
     try { o = JSON.parse(raw); } catch (e) { return; }
+    if (this.o.onServer) this.o.onServer(o);
     if (o.setupComplete) {
       this.ready = true;
       this.o.onModelChosen(model);
@@ -172,7 +173,8 @@ class LiveSession {
     }
     if (sc.outputTranscription && sc.outputTranscription.text && sc.outputTranscription.text.trim())
       this.o.onModelText(sc.outputTranscription.text);
-    if (sc.turnComplete) this.o.onModelText("\u0000");
+    if (sc.generationComplete) this.o.onLog("對方這一句講完（generationComplete）");
+    if (sc.turnComplete) { this.o.onLog("輪到你（turnComplete）"); this.o.onModelText("\u0000"); }
   }
 
   sendCue(asRealtime) {
@@ -241,6 +243,12 @@ class LiveSession {
     this.talking = false;
     this.send({ realtimeInput: { activityEnd: {} } });
     this.o.onLog("你說完了（手動）");
+  }
+
+  /** Ask the model to answer now (used when it seems to have stopped responding). */
+  nudge() {
+    if (this.closed || !this.ready) return;
+    this.send({ clientContent: { turns: [{ role: "user", parts: [{ text: "(The learner has finished speaking. Please reply to what they just said now.)" }] }], turnComplete: true } });
   }
 
   /** Quietly tell the model about the pace the learner wants (no reply is triggered). */

@@ -156,6 +156,7 @@ pre.log { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: 
 .cbar .pill.mute.on { background: #fff; color: #111; }
 .cbar .talkbtn { height: 46px; padding: 0 26px; border-radius: 23px; font-weight: 700; font-size: 16px; background: transparent; border: 2px solid var(--gold); color: var(--gold); }
 .cbar .talkbtn.on { background: var(--gold); color: #1A1405; }
+.banner.note { background: #3A2E10; color: #FFE29A; }
 .banner { background: #3A1518; color: #FFC9C9; padding: 12px 18px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
 .ptabs { display: flex; padding: 10px 12px 0; gap: 6px; border-bottom: 1px solid var(--stroke); }
 .ptabs button { padding: 9px 16px; border-radius: 10px 10px 0 0; color: var(--sub); font-weight: 700; font-size: 15px; }
