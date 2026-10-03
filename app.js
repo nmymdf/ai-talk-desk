@@ -1,8 +1,9 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "1.0";
-const RATES = [1, 0.9, 0.8];
+const VERSION = "1.1";
+const WAITS = [1000, 1800, 2800];
+const WAIT_NAMES = ["一般", "長一點（建議）", "很長"];
 const SPEED_NAMES = ["正常", "慢", "更慢"];
 const MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash"];
 
@@ -83,7 +84,7 @@ function toggleFullscreen() {
 
 const DEFAULTS = {
   key: "", liveModel: "", persona: "random", topicId: "random", level: 3, style: "chatty",
-  userName: "", speed: 0, goalMin: 15, bargeIn: false, manual: false, customTopics: []
+  userName: "", speed: 0, wait: 1, goalMin: 15, bargeIn: false, manual: false, customTopics: []
 };
 let P = Object.assign({}, DEFAULTS);
 try { Object.assign(P, JSON.parse(localStorage.getItem("desk_prefs") || "{}")); } catch (e) {}
@@ -208,19 +209,23 @@ function buildStart(root) {
   const speedSel = h("select", { class: "field" }, SPEED_NAMES.map((n, i) => h("option", { value: String(i), text: n })));
   speedSel.value = String(P.speed);
   speedSel.addEventListener("change", () => { P.speed = parseInt(speedSel.value, 10) || 0; savePrefs(); });
+  const waitSel = h("select", { class: "field" }, WAIT_NAMES.map((n, i) => h("option", { value: String(i), text: n })));
+  waitSel.value = String(P.wait);
+  waitSel.addEventListener("change", () => { P.wait = parseInt(waitSel.value, 10) || 0; savePrefs(); });
   const nameIn = h("input", { class: "field", type: "text", placeholder: "你的名字（對方偶爾會叫你）", value: P.userName,
     on: { input: () => { P.userName = nameIn.value.trim(); savePrefs(); } } });
   const personaCard = card("對話對象", grid, note("每位的臉、聲音、名字都是固定的。選「隨機」每次會換一位。"), gap(10),
     h("div", { class: "flabel", text: "對方說話風格" }), styleSel, gap(10),
     h("div", { class: "flabel", text: "對方說話速度（對話中也能隨時調整）" }), speedSel, gap(10),
+    h("div", { class: "flabel", text: "你停頓多久，對方才開始回答" }), waitSel, gap(10),
     h("div", { class: "flabel", text: "你的稱呼" }), nameIn);
 
-  root.appendChild(h("div", { class: "grid2" }, h("div", {}, topicCard, levelCard), h("div", {}, personaCard)));
-
-  root.appendChild(h("div", { style: "max-width:420px" },
+  const startCard = h("div", {},
+    sw("說完後由我按鈕，對方才回答", "開啟後，你要按「開始說話」，說完再按「說完了」（或空白鍵）；不會因為你停頓一下就被搶話。", P.manual, (v) => { P.manual = v; savePrefs(); }),
+    gap(8),
     h("button", { class: "btn gold big", text: "開始對話", on: { click: beginTalk } }),
-    note("建議戴耳機，避免喇叭的聲音被麥克風收回去。第一次使用瀏覽器會詢問麥克風權限，請按「允許」。" +
-      (P.manual ? "　目前是「手動結束發言」：說完請按「說完了」或空白鍵。" : ""))));
+    note("建議戴耳機，避免喇叭的聲音被麥克風收回去。第一次使用瀏覽器會詢問麥克風權限，請按「允許」。"));
+  root.appendChild(h("div", { class: "grid2" }, h("div", {}, topicCard, levelCard, startCard), h("div", {}, personaCard)));
 
   root.appendChild(h("div", { class: "footer", text: "AI 英文對話  ·  ArchieKuo  ·  v" + VERSION }));
 }
@@ -275,7 +280,7 @@ async function beginTalk() {
     apiKey: P.key, savedModel: P.liveModel, voice: persona.voice,
     system: deskPrompt(topic, P.style, P.userName, P.level, persona, P.speed),
     cue: DESK_CUE, ctx, stream: D.stream, manual: P.manual,
-    rate: () => RATES[P.speed] || 1,
+    silenceMs: WAITS[P.wait] || 1800,
     isMuted: () => mine.muted,
     allowBargeIn: () => P.bargeIn,
     onModelChosen: (m) => { P.liveModel = m; savePrefs(); },

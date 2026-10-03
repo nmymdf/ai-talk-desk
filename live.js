@@ -40,6 +40,7 @@ class LiveSession {
     this.micNode = null;
     this.out = null;
     this.talking = false;
+    this.useVad = true;
   }
 
   async start() {
@@ -94,7 +95,8 @@ class LiveSession {
           inputAudioTranscription: {},
           outputAudioTranscription: {},
           contextWindowCompression: { slidingWindow: {} },
-          ...(this.o.manual ? { realtimeInputConfig: { automaticActivityDetection: { disabled: true } } } : {})
+          realtimeInputConfig: this.o.manual ? { automaticActivityDetection: { disabled: true } }
+            : (this.useVad ? { automaticActivityDetection: { endOfSpeechSensitivity: "END_SENSITIVITY_LOW", prefixPaddingMs: 120, silenceDurationMs: this.o.silenceMs || 1800 } } : undefined)
         }
       }));
     };
@@ -111,6 +113,13 @@ class LiveSession {
 
   fail(model, msg) {
     if (this.closed) return;
+    if (!this.ready && this.useVad && !this.o.manual && /1007|1011|invalid|unknown name|silence|sensitivity/i.test(msg)) {
+      this.useVad = false;
+      this.o.onLog("這個模型不接受「等待時間」設定，改用預設值");
+      try { this.ws && (this.ws.onclose = null, this.ws.onerror = null, this.ws.close()); } catch (e) {}
+      this.connect();
+      return;
+    }
     if (!this.ready && this.candIdx + 1 < this.candidates.length) {
       this.o.onLog(model + " 不能用（" + msg + "），換下一個");
       this.candIdx++;
