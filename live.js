@@ -96,7 +96,7 @@ class LiveSession {
           outputAudioTranscription: {},
           contextWindowCompression: { slidingWindow: {} },
           realtimeInputConfig: this.o.manual ? { automaticActivityDetection: { disabled: true } }
-            : (this.useVad ? { automaticActivityDetection: { prefixPaddingMs: 120, silenceDurationMs: this.o.silenceMs || 1800 } } : undefined)
+            : (this.useVad ? { automaticActivityDetection: { endOfSpeechSensitivity: "END_SENSITIVITY_LOW", prefixPaddingMs: 120, silenceDurationMs: this.o.silenceMs || 1800 } } : undefined)
         }
       }));
     };
