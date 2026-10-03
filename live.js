@@ -147,6 +147,7 @@ class LiveSession {
       this.o.onModelChosen(model);
       this.o.onLog("即時連線成功，開始通話");
       this.startAudio().then(() => {
+        if (!this.o.cue) return; // silent hand-over: wait for the learner to speak
         this.sendCue(false);
         setTimeout(() => {
           if (!this.closed && !this.gotAudio) { this.o.onLog("6 秒沒聲音，改用另一種方式叫對方開口"); this.sendCue(true); }

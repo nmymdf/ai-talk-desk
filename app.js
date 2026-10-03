@@ -1,7 +1,8 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "1.2";
+const VERSION = "1.3";
+const REFRESH_MS = window.__REFRESH_MS || 300000; // open a fresh connection every ~5 min (sessions went silent after ~7 min)
 const WAITS = [1000, 1800, 2800];
 const WAIT_NAMES = ["一般", "長一點（建議）", "很長"];
 const SPEED_NAMES = ["正常", "慢", "更慢"];
@@ -262,7 +263,7 @@ async function beginTalk() {
   const ctx = ensureAC();
   const persona = resolvePersona(P.persona), topic = resolveTopic(P.topicId, P.customTopics);
   D = { persona, topic, level: P.level, manual: P.manual, t0: Date.now(), startMs: Date.now(), msgs: [], muted: false, live: null, stream: null,
-    ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "" };
+    ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "" };
   msgEls = new Map();
   logLine("對話開始 " + persona.name + " / " + topic.label + " / 難度 " + P.level + (P.manual ? " / 手動結束發言" : ""));
   buildTalk();
@@ -284,11 +285,14 @@ function startLive(recover) {
   const mine = D;
   const hist = recover ? mine.msgs.filter(m => m.text.trim()).slice(-14).map(m => (m.who === "me" ? "Learner: " : "You: ") + m.text.trim()).join("\n") : "";
   const system = deskPrompt(mine.topic, P.style, P.userName, mine.level, mine.persona, P.speed) +
-    (recover ? "\n\nThe conversation was just interrupted by a short connection problem and you are resuming it. What was said so far (the \"You\" lines are yours):\n" + hist + "\nContinue naturally from there." : "");
-  const cue = recover
+    (recover === "refresh"
+      ? "\n\nThe conversation is already in progress and you are continuing it on a fresh connection. What was said so far (the \"You\" lines are yours):\n" + hist + "\nDo NOT greet, do not mention any interruption, and do not speak first: stay silent until the learner speaks, then reply naturally to what they say, as if nothing happened."
+      : recover ? "\n\nThe conversation was just interrupted by a short connection problem and you are resuming it. What was said so far (the \"You\" lines are yours):\n" + hist + "\nContinue naturally from there." : "");
+  const cue = recover === "refresh" ? null : recover
     ? "(The connection dropped for a moment and is back. Say one very short line such as \"Sorry, I lost you for a second.\" and then carry on with the conversation naturally from where it was.)"
     : DESK_CUE;
   mine.lastSrvMs = Date.now();
+  mine.sessionMs = Date.now();
   const L = new LiveSession({
     apiKey: P.key, savedModel: P.liveModel, voice: mine.persona.voice,
     system, cue, ctx: ensureAC(), stream: mine.stream, manual: mine.manual,
@@ -306,7 +310,7 @@ function startLive(recover) {
     onUserText: (t) => { if (D === mine && mine.live === L) pushText("me", t); },
     onFail: (e) => {
       if (D !== mine || mine.live !== L || mine.ended) return;
-      if (L.ready && mine.retries < 3) { mine.retries++; logLine("連線中斷，自動重連（第 " + mine.retries + " 次）：" + ((e && e.message) || e)); reconnectTalk(true); }
+      if (L.ready && mine.retries < 3) { mine.retries++; logLine("連線中斷，自動重連（第 " + mine.retries + " 次）：" + ((e && e.message) || e)); reconnectTalk(true, "drop"); }
       else failTalk(e);
     }
   });
@@ -315,15 +319,16 @@ function startLive(recover) {
 }
 
 /** Drop the current connection and open a new one, keeping the conversation on screen. */
-function reconnectTalk(auto) {
+function reconnectTalk(auto, mode) {
   if (!D || D.ended) return;
+  mode = mode || "drop";
   const old = D.live;
   D.live = null;
   try { old && old.close(); } catch (e) {}
   const m = lastMsg(); if (m) m.closed = true;
   D.stuck = false;
-  setNote(auto ? "連線中斷，正在重新連線…" : "正在重新連線…");
-  setTimeout(() => { if (D && !D.ended) { startLive(true); setTimeout(() => { if (D && !D.ended && D.live && D.live.ready) setNote(""); }, 2500); } }, 900);
+  setNote(mode === "refresh" ? "已自動更新連線，可以繼續說" : auto ? "連線中斷，正在重新連線…" : "正在重新連線…");
+  setTimeout(() => { if (D && !D.ended) { startLive(mode); setTimeout(() => { if (D && !D.ended && D.live && D.live.ready) setNote(""); }, mode === "refresh" ? 2500 : 3500); } }, 700);
   paintBar();
 }
 
@@ -333,8 +338,8 @@ function nudgeTalk() {
   if (!D || D.ended || !D.live) return;
   D.live.nudge();
   D.lastSrvMs = Date.now();
-  logLine("手動叫對方回答");
-  D.stuck = false; paintBar();
+  logLine("叫對方回答");
+  paintBar();
 }
 
 function lastMsg() { return D && D.msgs[D.msgs.length - 1]; }
@@ -342,6 +347,7 @@ function lastMsg() { return D && D.msgs[D.msgs.length - 1]; }
 function pushText(who, t) {
   if (!t || !D) return;
   D.lastTextMs = Date.now();
+  if (who === "ai") D.nudges = 0;
   let m = lastMsg();
   if (!m || m.who !== who || m.closed) { m = { id: ++uid, who, text: "", closed: false }; D.msgs.push(m); if (who === "me") { const a = D.msgs[D.msgs.length - 2]; if (a && a.who === "ai") a.closed = true; } }
   m.text += m.text ? t : t.replace(/^\s+/, "");
@@ -455,7 +461,7 @@ function paintBar() {
   const kids = [h("div", { class: "status" }, h("span", { class: "dot " + dot }), h("span", { id: "stext", text: txt }))];
   if (!D.ended && D.stuck) {
     kids.push(h("button", { class: "pill gold", text: "叫對方回答", on: { click: (e) => { e.currentTarget.blur(); nudgeTalk(); } } }),
-      h("button", { class: "pill", text: "重新連線", on: { click: (e) => { e.currentTarget.blur(); logLine("手動重新連線"); reconnectTalk(false); } } }));
+      h("button", { class: "pill", text: "重新連線", on: { click: (e) => { e.currentTarget.blur(); logLine("手動重新連線"); reconnectTalk(false, "drop"); } } }));
   }
   if (!D.ended) {
     kids.push(h("div", { class: "row", style: "gap:4px" }, h("span", { class: "sub", style: "font-size:13px;margin-right:2px", text: "語速" }),
@@ -471,10 +477,20 @@ let lastStatus = "";
 function tick() {
   if (!D) return;
   const t = $("timer"); if (t && !D.ended) t.textContent = mmss((Date.now() - D.startMs) / 1000);
-  if (!D.ended && D.live && D.live.ready && !D.manual) {
+  if (!D.ended && D.live && D.live.ready) {
     const m = lastMsg(), now = Date.now();
-    const stuck = !!(m && m.who === "me" && !m.closed && !D.live.speaking() && now - D.lastTextMs > 9000 && now - D.lastSrvMs > 9000);
-    if (stuck !== D.stuck) { D.stuck = stuck; if (stuck) logLine("對方超過 9 秒沒有回應"); paintBar(); }
+    const quiet = !D.live.speaking() && !D.live.talking;
+    const waiting = !!(m && m.who === "me" && !m.closed && quiet && now - D.lastTextMs > 9000 && now - D.lastSrvMs > 9000);
+    if (waiting) {
+      if (!D.stuck) { D.stuck = true; logLine("對方超過 9 秒沒有回應"); paintBar(); }
+      if (D.nudges === 0) { D.nudges = 1; nudgeTalk(); }
+      else { D.nudges = 0; logLine("叫了還是沒有回應，自動重新連線"); reconnectTalk(true, "drop"); }
+    } else if (D.stuck) { D.stuck = false; paintBar(); }
+    // sessions that run a long time stopped answering, so quietly swap in a fresh connection every few minutes
+    if (!waiting && m && m.who === "ai" && m.closed && quiet && now - D.sessionMs > REFRESH_MS && now - D.lastTextMs > 3000) {
+      logLine("連線已超過 " + Math.round((now - D.sessionMs) / 60000) + " 分鐘，趁安靜時換一條新連線");
+      reconnectTalk(true, "refresh");
+    }
   } else if (D.stuck) D.stuck = false;
   const key = statusText().join("|") + (D.live && D.live.talking ? "T" : "") + (D.stuck ? "S" : "");
   if (key !== lastStatus) { lastStatus = key; paintBar(); }
