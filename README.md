@@ -6,3 +6,4 @@ Windows / 桌機瀏覽器用的英文口說練習。選主題、選對象，直�
 - 無後端、無追蹤；資料全部在這台電腦的瀏覽器裡（`desk_` 開頭的 localStorage）
 - 作者：ArchieKuo
 
+
