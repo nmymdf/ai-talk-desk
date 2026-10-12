@@ -269,6 +269,15 @@ const TOPICS = [
   ]
  },
  {
+  "id": "teacher",
+  "label": "英文老師（聊天加糾正）",
+  "scenario": "You are the learner's friendly English teacher, having a relaxed one-on-one speaking practice. Chat about whatever the learner is interested in (daily life, work, hobbies, plans) and lead the conversation with warm follow-up questions. While chatting, help them speak better: when they make a mistake, naturally say the correct version in your reply and move on without lecturing; every few turns teach ONE useful, natural expression connected to what they just said (say it, give one short example, invite them to try it). Praise real effort sincerely and never make them feel bad.",
+  "openers": [
+   "Hi! Great to see you. How has your day been so far? Tell me anything you like, and I will help you say it even better.",
+   "Hello! I'm glad we can practice today. What would you like to talk about? Your day, your work, or something you enjoy?"
+  ]
+ },
+ {
   "id": "story",
   "label": "說故事",
   "scenario": "You are a friend named Alex telling the user an engaging story over the phone, in short pieces: a funny thing that happened to you, a travel adventure, a mystery, or a made-up tale. Tell two or three sentences at a time, then pause and let the user react, guess what happens next, or ask a question. Continue the same story from where you stopped, and invite the user to add ideas.",
@@ -290,22 +299,24 @@ const PERSONAS = [
 ];
 
 const LEVEL_TEXTS = [
-  "1 級　最簡單：只用最基本的字，句子很短、說得慢，一次只問一件事",
-  "2 級　簡單：日常用字、短句，說得慢，不用慣用語",
-  "3 級　中等：一般日常聊天，有口語縮寫，速度自然",
-  "4 級　偏難：較長的句子、慣用語，會問需要想一下的問題",
-  "5 級　最難：像跟母語朋友聊天，語速快，有俚語和複雜句子"
+  "1 級　入門：只用最基本的字，每句 3–6 個字，說得很慢，一次只問一件事",
+  "2 級　簡單：日常用字、短句，說得慢，不用慣用語和俚語",
+  "3 級　基礎對話：簡單的日常聊天，速度自然偏慢，偶爾有簡單常見的口語",
+  "4 級　中等：一般日常聊天，有口語縮寫，常見的口語和片語動詞",
+  "5 級　進階：正常語速、較長的句子，會用大家常說的口語和慣用語，不用冷門俚語"
 ];
 
-function levelWords(level) { return [10, 14, 22, 30, 40][Math.min(Math.max(level, 1), 5) - 1]; }
+function levelWords(level) { return [8, 10, 14, 22, 36][Math.min(Math.max(level, 1), 5) - 1]; }
+
+const SLANG_LIMIT = " Never use obscure slang, trendy slang that mostly young people use, or regional expressions.";
 
 function levelRule(level) {
   switch (level) {
-    case 1: return "LANGUAGE LEVEL 1 of 5 (beginner): use only the most basic, very common words and very short, simple sentences. Speak slowly and clearly, with a short pause between sentences. Ask only simple questions that can be answered with a word or two. No idioms, no slang, no phrasal verbs. If they struggle, say it again in even simpler words.";
-    case 2: return "LANGUAGE LEVEL 2 of 5 (elementary): use simple everyday words and short sentences. Speak slowly and clearly. Ask simple, concrete questions. Avoid idioms and slang; if you must use an uncommon word, make its meaning obvious.";
-    case 3: return "LANGUAGE LEVEL 3 of 5 (intermediate): natural everyday conversation with contractions and a normal friendly pace. Use plain, common words. Do NOT use slang or trendy expressions, and use an idiom only rarely and only a very common one; whenever you use an idiom, say it again right away in plain words.";
-    case 4: return "LANGUAGE LEVEL 4 of 5 (upper-intermediate): use fuller, longer sentences, common idioms and phrasal verbs, and a natural pace. Ask opinion questions that need a sentence or two to answer.";
-    default: return "LANGUAGE LEVEL 5 of 5 (advanced): talk exactly like a native-speaking friend: natural fast pace, slang, idioms, humor, reduced forms and complex sentences. Do not simplify. Ask open-ended, thought-provoking questions.";
+    case 1: return "LANGUAGE LEVEL 1 of 5 (absolute beginner): use only the most basic, very common words. Every sentence has 3 to 6 words. Speak very slowly and clearly, with a clear pause between sentences. Say only one idea at a time and ask only one very simple question at a time, one that can be answered with yes, no or a single word. No idioms, no slang, no phrasal verbs, no contractions where avoidable. If they hesitate or do not answer, say it again in even simpler words, or offer two choices to pick from.";
+    case 2: return "LANGUAGE LEVEL 2 of 5 (beginner): use simple everyday words and short sentences. Speak slowly and clearly. Ask simple, concrete questions that can be answered with a word or two. No idioms, no slang, no phrasal verbs. If they struggle, say it again in simpler words.";
+    case 3: return "LANGUAGE LEVEL 3 of 5 (elementary): simple everyday words and short sentences at a calm, fairly slow pace. Ask simple, concrete questions. Avoid idioms; you may use a few very simple, very common casual expressions such as \"sure\", \"no worries\", \"sounds good\" or \"you know what\"; if you use an uncommon word, make its meaning obvious." + SLANG_LIMIT;
+    case 4: return "LANGUAGE LEVEL 4 of 5 (intermediate): natural everyday conversation with contractions, a normal friendly pace, and common phrasal verbs and everyday casual expressions. You may use a common idiom now and then. Ask questions that need a sentence or two to answer." + SLANG_LIMIT;
+    default: return "LANGUAGE LEVEL 5 of 5 (upper-intermediate): normal speaking speed with fuller, longer sentences, contractions, phrasal verbs and the casual expressions and common idioms that most native speakers use every day, including simple humor. Ask open-ended questions that need a thoughtful answer." + SLANG_LIMIT;
   }
 }
 
@@ -361,6 +372,7 @@ function resolveTopic(id, customs) {
 }
 
 function systemPrompt(topic, style, userName, level, callerName, fixMode) {
+  if (topic.id === "teacher") { style = "teacher"; if (!fixMode || fixMode === "none") fixMode = "recast"; }
   const name = (userName || "").trim();
   const nameBlock = name
     ? "\nThe person you are talking to is named " + name + ". Say their name once when you first greet them. After that use it only rarely: at most once in about every ten of your replies, and only when it really fits (for example comforting them or saying goodbye). Never use it in two replies in a row, and never tack it on the end of a sentence out of habit. Most of your replies must not contain their name at all.\n"
@@ -396,7 +408,7 @@ function systemPrompt(topic, style, userName, level, callerName, fixMode) {
     styleLine = null;
     questionLine = "Ask a question in at most every other turn; in the other turns just share a short comment or opinion and let them continue.";
   }
-  if (style === "funny" && level <= 3) styleLine += " Keep the jokes simple and easy to understand: no slang, and do not rely on idioms for the humor.";
+  if (style === "funny" && level <= 3) styleLine += " Keep the jokes simple and easy to understand, and do not rely on slang or idioms for the humor.";
   if (topic.id === "story" && (style === "focused" || style === "curious" || style === "teacher")) styleLine = storyLine;
   else if (!styleLine) styleLine = topic.id === "story" ? storyLine : plainLine;
   const correctLine = fixMode === "recast"
@@ -517,7 +529,7 @@ const DESK_WARM_PROMPT = `
 An English learner (a native Chinese speaker, level LEVEL of 5, where 1 is beginner and 5 is advanced) is about to practise speaking in this situation:
 SCENARIO
 
-Give exactly 6 short, useful spoken sentences or phrases the learner is likely to need in this situation, matched to their level (simple and short for levels 1-2, natural everyday for level 3, richer for levels 4-5). Mix openers, replies, questions to ask, and polite ways to ask for repetition or clarification. No slang.
+Give exactly 6 short, useful spoken sentences or phrases the learner is likely to need in this situation, matched to their level (very simple and short for levels 1-2, simple everyday for level 3, natural everyday for level 4, richer for level 5). Mix openers, replies, questions to ask, and polite ways to ask for repetition or clarification. No slang.
 Return ONLY JSON: {"phrases":[{"en":"the English phrase","zh":"its meaning in Traditional Chinese"}]}
 `.trim();
 
