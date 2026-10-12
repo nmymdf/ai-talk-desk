@@ -184,7 +184,14 @@ function buildStatsPage(root) {
   const lv = Stats.dim("level");
   const diff = card("難度趨勢", h("div", { class: "bars" }, barRows([1, 2, 3, 4, 5].map(i => ["第 " + i + " 級", lv[String(i)] || 0]))), note("看你多半在哪個難度練習；慢慢往上調。"));
 
-  root.appendChild(h("div", { class: "grid2" }, h("div", {}, overview, goal, rank), h("div", {}, trend, dist, diff)));
+  const fl = Calls.all().filter(r => r.fluency).slice(0, 10).reverse();
+  const fluTrend = card("流暢度趨勢（最近 " + (fl.length || 10) + " 次對話）", fl.length
+    ? h("div", { class: "scroll" }, h("table", { class: "monotable", id: "flutable" },
+        h("tr", {}, ["日期", "字/分", "說話比例", "反應", "停頓", "每次字數"].map(t => h("th", { text: t }))),
+        fl.map(r => h("tr", {}, [fmtDate(r.ts), r.fluency.wpm || "—", r.fluency.share + "%", r.fluency.reaction === null ? "—" : r.fluency.reaction + " 秒", r.fluency.pauses, r.fluency.avgWords].map(t => h("td", { text: String(t) }))))))
+    : note("還沒有資料。正常對話 20 秒以上、說了幾句之後，這裡會開始累積。"),
+    note("數字由麥克風聲音估算，看趨勢就好：說話速度變快、反應變短、停頓變少，就是變流暢。"));
+  root.appendChild(h("div", { class: "grid2" }, h("div", {}, overview, goal, rank), h("div", {}, trend, fluTrend, dist, diff)));
   updateGoal(); load();
   root.appendChild(h("div", { style: "max-width:240px" }, h("button", { class: "btn danger", text: "清除全部統計", on: { click: () =>
     modal("清除全部統計？", h("div", { class: "sub", text: "累積時間、走勢與排行都會歸零，無法復原。" }), [{ text: "取消" }, { text: "清除", primary: true, onClick: () => { Stats.clear(); go("stats"); } }]) } })));

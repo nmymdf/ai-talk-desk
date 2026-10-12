@@ -1,7 +1,7 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "1.7";
+const VERSION = "1.8";
 const REFRESH_MS = window.__REFRESH_MS || 300000; // open a fresh connection every ~5 min (sessions went silent after ~7 min)
 const WAITS = [1000, 1800, 2800, 600];
 const WAIT_NAMES = ["一般", "長一點（建議）", "很長", "很快（回得快，但容易被搶話）"];
@@ -43,13 +43,13 @@ function toast(msg, ms) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), ms || 3200);
 }
 
-function modal(title, body, buttons) {
+function modal(title, body, buttons, onDismiss) {
   const bg = h("div", { class: "modal" });
   const close = () => bg.remove();
   const btns = h("div", { class: "btns" }, (buttons || [{ text: "關閉" }]).map(b =>
     h("button", { class: b.primary ? "pill gold" : "pill", text: b.text, on: { click: () => { if (!b.onClick || b.onClick() !== false) close(); } } })));
   bg.appendChild(h("div", { class: "box" }, h("h3", { text: title }), body, btns));
-  bg.addEventListener("click", (e) => { if (e.target === bg) close(); });
+  bg.addEventListener("click", (e) => { if (e.target === bg) { close(); if (onDismiss) onDismiss(); } });
   document.body.appendChild(bg);
   return close;
 }
@@ -87,7 +87,7 @@ function toggleFullscreen() {
 
 const DEFAULTS = {
   key: "", liveModel: "", persona: "random", topicId: "random", level: 3, style: "chatty",
-  userName: "", speed: 0, wait: 1, goalMin: 15, bargeIn: false, manual: false, hold: false, fix: 0, customTopics: []
+  userName: "", speed: 0, wait: 1, goalMin: 15, bargeIn: false, manual: false, hold: false, fix: 0, warm: true, customTopics: []
 };
 let P = Object.assign({}, DEFAULTS);
 try { Object.assign(P, JSON.parse(localStorage.getItem("desk_prefs") || "{}")); } catch (e) {}
@@ -158,6 +158,7 @@ async function keepAwake(on) {
 let page = "start";
 function go(name) {
   if (D && !D.ended) { toast("對話進行中，請先按「結束對話」"); return; }
+  if (typeof monoFlush === "function") monoFlush();
   page = name;
   closeTalk();
   renderSide();
@@ -166,11 +167,11 @@ function go(name) {
   root.scrollTop = 0;
   const wrap = h("div", { class: "wrap" });
   root.appendChild(wrap);
-  ({ start: buildStart, review: buildReview, stats: buildStatsPage, system: buildSystemPage }[name])(wrap);
+  ({ start: buildStart, mono: buildMono, review: buildReview, stats: buildStatsPage, system: buildSystemPage }[name])(wrap);
 }
 
 function renderSide() {
-  const items = [["start", "💬", "開始對話"], ["review", "📒", "錯誤複習"], ["stats", "📈", "統計"], ["system", "⚙", "系統"]];
+  const items = [["start", "💬", "開始對話"], ["mono", "🎙", "一分鐘獨白"], ["review", "📒", "錯誤複習"], ["stats", "📈", "統計"], ["system", "⚙", "系統"]];
   $("side").replaceChildren(
     h("div", { class: "brand" }, h("img", { src: "img/logo.jpg", alt: "" }), h("div", {}, h("b", { text: "AI 英文對話" }), h("span", { text: "作者：ArchieKuo" }))),
     ...items.map(([id, ic, t]) => h("button", { class: "nav" + (page === id ? " on" : ""), on: { click: () => go(id) } }, h("span", { text: ic }), h("span", { text: t }))),
@@ -251,6 +252,8 @@ function buildStart(root) {
     h("div", { class: "flabel", text: "你的稱呼" }), nameIn);
 
   const startCard = h("div", {},
+    sw("開始前先看暖身卡", "開始對話前，先給你 6 句這個情境用得到的英文，可以先聽一遍，說的時候比較不卡。", P.warm, (v) => { P.warm = v; savePrefs(); }),
+    gap(8),
     sw("說完後由我按鈕，對方才回答", "開啟後，你要按「開始說話」，說完再按「說完了」（或空白鍵）；不會因為你停頓一下就被搶話。對話中也能隨時切換。", P.manual, (v) => { P.manual = v; savePrefs(); }),
     gap(8),
     sw("手動模式：按住說話", "開啟後，改成按住按鈕（或按住空白鍵）說話，放開就送出，像對講機。", P.hold, (v) => { P.hold = v; savePrefs(); }),
@@ -289,11 +292,61 @@ let msgEls = new Map();
 
 function logLine(msg) { if (D) D.log.push("[" + ((Date.now() - D.t0) / 1000).toFixed(1).padStart(5) + "s] " + msg); }
 
+// ---- warm-up card: a few useful phrases for the situation, shown before the conversation starts
+
+const WarmCache = {
+  get(k) { try { return (JSON.parse(localStorage.getItem("desk_warm") || "{}"))[k] || null; } catch (e) { return null; } },
+  set(k, v) { try { const o = JSON.parse(localStorage.getItem("desk_warm") || "{}"); o[k] = v; const ks = Object.keys(o); if (ks.length > 40) delete o[ks[0]]; localStorage.setItem("desk_warm", JSON.stringify(o)); } catch (e) {} }
+};
+
+function speakEn(text) {
+  try { if (!window.speechSynthesis) return; speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.lang = "en-US"; u.rate = 0.9; speechSynthesis.speak(u); } catch (e) {}
+}
+
+/** Resolves with the phrase list ([] = skipped) or null when the learner backs out. */
+function showWarmup(topic, level) {
+  return new Promise((resolve) => {
+    const key = topic.id + "|" + level + "|" + (topic.id.startsWith("c:") ? (topic.label || "") : "");
+    let phrases = WarmCache.get(key);
+    const box = h("div", { id: "warmbox" });
+    let closed = false;
+    const paint = (state) => {
+      if (closed) return;
+      if (state === "loading") box.replaceChildren(h("div", { class: "empty", style: "margin:18px 0", text: "正在準備這個情境的常用句…" }));
+      else if (state === "err") box.replaceChildren(h("div", { class: "sub", text: "暫時產生不出來，可以直接開始對話。" }));
+      else box.replaceChildren(h("div", { class: "sub", style: "margin-bottom:8px", text: "「" + topic.label + "」常用的句子（按 🔊 聽一遍）" }),
+        ...phrases.map(x => h("div", { class: "fix starter warmitem" },
+          h("div", { class: "row" }, h("div", { class: "grow better", text: x.en }), h("button", { class: "pill", text: "🔊", on: { click: () => speakEn(x.en) } })),
+          x.zh ? h("div", { class: "why", text: x.zh }) : null)));
+    };
+    const finish = (v) => { closed = true; try { window.speechSynthesis && speechSynthesis.cancel(); } catch (e) {} resolve(v); };
+    modal("暖身：先看幾句", box, [
+      { text: "取消", onClick: () => finish(null) },
+      { text: "跳過", onClick: () => finish([]) },
+      { text: "開始對話", primary: true, onClick: () => finish(phrases || []) }
+    ], () => finish(null));
+    if (phrases) paint("ok");
+    else {
+      paint("loading");
+      const prompt = DESK_WARM_PROMPT.replace("LEVEL", String(level)).replace("SCENARIO", String(topic.scenario || topic.label).replace(/Alex/g, "your partner"));
+      geminiGenerate(P.key, MODELS, prompt, true).then(t => {
+        const o = parseJson(t);
+        const list = (Array.isArray(o.phrases) ? o.phrases : []).filter(x => x && typeof x.en === "string" && x.en.trim()).slice(0, 6)
+          .map(x => ({ en: x.en.trim(), zh: String(x.zh || "").trim() }));
+        if (!list.length) throw new Error("empty");
+        phrases = list; WarmCache.set(key, list); paint("ok");
+      }).catch(() => { paint("err"); });
+    }
+  });
+}
+
 async function beginTalk() {
   if (!P.key) { toast("還沒有 Gemini 金鑰，請先到「系統」頁設定"); go("system"); return; }
   const ctx = ensureAC();
   const persona = drawPersona(P.persona), topic = drawTopic(P.topicId, P.customTopics);
-  D = { persona, topic, level: P.level, manual: P.manual, t0: Date.now(), startMs: Date.now(), msgs: [], muted: false, live: null, stream: null,
+  let warm = [];
+  if (P.warm) { const w = await showWarmup(topic, P.level); if (w === null) return; warm = w; }
+  D = { warm, meter: new SpeechMeter(), persona, topic, level: P.level, manual: P.manual, t0: Date.now(), startMs: Date.now(), msgs: [], muted: false, live: null, stream: null,
     ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "", simple: false, help: { starters: null, loading: false, q: [], qLoading: false, err: "", draft: "" } };
   msgEls = new Map();
   logLine("對話開始 " + persona.name + " / " + topic.label + " / 難度 " + P.level + (P.manual ? " / 手動結束發言" : ""));
@@ -315,7 +368,7 @@ async function beginTalk() {
 function startLive(recover) {
   const mine = D;
   const hist = recover ? mine.msgs.filter(m => m.text.trim()).slice(-14).map(m => (m.who === "me" ? "Learner: " : "You: ") + m.text.trim()).join("\n") : "";
-  const system = deskPrompt(mine.topic, P.style, P.userName, mine.level, mine.persona, P.speed, FIX_KEYS[P.fix] || "none", mine.simple) +
+  const system = deskPrompt(mine.topic, P.style, P.userName, mine.level, mine.persona, P.speed, FIX_KEYS[P.fix] || "none", mine.simple, mine.warm) +
     (recover === "refresh"
       ? "\n\nThe conversation is already in progress and you are continuing it on a fresh connection. What was said so far (the \"You\" lines are yours):\n" + hist + "\nDo NOT greet, do not mention any interruption, and do not speak first: stay silent until the learner speaks, then reply naturally to what they say, as if nothing happened."
       : recover ? "\n\nThe conversation was just interrupted by a short connection problem and you are resuming it. What was said so far (the \"You\" lines are yours):\n" + hist + "\nContinue naturally from there." : "");
@@ -329,6 +382,7 @@ function startLive(recover) {
     system, cue, ctx: ensureAC(), stream: mine.stream, manual: mine.manual,
     silenceMs: WAITS[P.wait] || 1800,
     isMuted: () => mine.muted,
+    meter: mine.meter,
     allowBargeIn: () => P.bargeIn,
     onModelChosen: (m) => { P.liveModel = m; savePrefs(); },
     onLog: (m) => { if (D === mine) logLine(m); },
@@ -411,10 +465,17 @@ function endTalk() {
   const myWords = myMsgs.reduce((n, m) => n + m.text.trim().split(/\s+/).filter(Boolean).length, 0);
   d.dur = dur; d.myCount = myMsgs.length; d.myWords = myWords;
   try {
+    const f = d.meter.stats(myWords, myMsgs.length);
+    if (f.speechSec >= 5 && myWords >= 8) {
+      f.fillers = (myMsgs.map(m => m.text).join(" ").match(/\b(um+|uh+|er+|erm|hmm+)\b/gi) || []).length;
+      d.fluency = f;
+    }
+  } catch (e) {}
+  try {
     if (dur >= 10 && d.live && d.live.ready) Stats.add(dur, d.startMs, d.persona.name, d.topic.label, d.level);
     Diag.addLog({ ts: d.startMs, persona: d.persona.name, topic: d.topic.label, lines: d.log.slice(-150) });
   } catch (e) {}
-  const rec = { ts: d.startMs, durationSec: dur, persona: d.persona.name, topic: d.topic.label, level: d.level, transcript: text, feedback: "" };
+  const rec = { ts: d.startMs, durationSec: dur, persona: d.persona.name, topic: d.topic.label, level: d.level, transcript: text, feedback: "", fluency: d.fluency || null };
   if (dur >= 20 && myMsgs.length) { try { Calls.add(rec); } catch (e) {} }
   if (myMsgs.length >= 2 && myWords >= 12 && P.key) {
     d.analysis = "loading";
@@ -702,6 +763,36 @@ async function translateMsg(m) {
 
 // ---- right panel
 
+// ---- fluency report (estimated from the microphone and playback timing)
+
+function fluencyAvg(excludeTs) {
+  const l = Calls.all().filter(r => r.fluency && r.ts !== excludeTs).slice(0, 5);
+  if (!l.length) return null;
+  const avg = (k) => { const v = l.map(r => r.fluency[k]).filter(x => typeof x === "number"); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  return { n: l.length, share: avg("share"), wpm: avg("wpm"), reaction: avg("reaction"), pauses: avg("pauses"), avgWords: avg("avgWords") };
+}
+
+function fluencyCard(f, ts) {
+  const prev = fluencyAvg(ts);
+  const cmp = (cur, old, unit, lowerBetter, dec) => {
+    if (!prev || old === null || old === undefined || cur === null || cur === undefined) return "";
+    const d = cur - old, mag = Math.abs(d);
+    if (mag < (dec ? 0.1 : 1)) return "和之前差不多";
+    const better = lowerBetter ? d < 0 : d > 0;
+    return "比之前" + (d > 0 ? "多" : "少") + " " + (dec ? mag.toFixed(1) : Math.round(mag)) + unit + (better ? " ↑" : "");
+  };
+  const row = (label, value, extra) => h("div", { class: "kv flu" }, h("span", { text: label }), h("b", { text: value }), extra ? h("small", { text: extra }) : null);
+  return h("div", { id: "flucard", style: "margin-top:16px" },
+    h("div", { class: "ptitle", text: "流暢度報告" }),
+    row("你說話的比例", f.share + "%", cmp(f.share, prev && prev.share, "%", false, false)),
+    row("說話速度", f.wpm ? f.wpm + " 字/分" : "—", f.wpm ? cmp(f.wpm, prev && prev.wpm, " 字", false, false) : ""),
+    row("反應時間（中位數）", f.reaction === null ? "—" : f.reaction + " 秒", cmp(f.reaction, prev && prev.reaction, " 秒", true, true)),
+    row("中途停頓（0.8 秒以上）", f.pauses + " 次" + (f.longest ? "，最長 " + f.longest + " 秒" : ""), cmp(f.pauses, prev && prev.pauses, " 次", true, false)),
+    row("每次說幾個字", f.avgWords + " 字", cmp(f.avgWords, prev && prev.avgWords, " 字", false, true)),
+    f.fillers ? row("嗯／呃 的次數", f.fillers + " 次", "") : null,
+    h("div", { class: "sub", style: "font-size:12.5px;margin-top:6px;line-height:1.5", text: prev ? "和之前 " + prev.n + " 次對話的平均比較。數字是用麥克風聲音估算的，戴耳機會比較準，只看趨勢就好。" : "數字是用麥克風聲音估算的，戴耳機會比較準。多練幾次後，這裡會和之前的平均比較。" }));
+}
+
 function paintPanel() {
   const tabs = $("ptabs"), body = $("pbody"); if (!tabs || !body || !D) return;
   tabs.replaceChildren(
@@ -750,6 +841,7 @@ function paintPanel() {
       h("div", { class: "kv" }, h("span", { text: "你說了" }), h("b", { text: mine.length + " 句" })),
       h("div", { class: "kv" }, h("span", { text: "你說的字數" }), h("b", { text: words + " 字" })),
       h("div", { class: "kv" }, h("span", { text: "主題" }), h("b", { text: D.topic.label }))];
+    if (D.ended && D.fluency) kids.push(fluencyCard(D.fluency, D.startMs));
     if (a && a.word) kids.push(h("div", { class: "ptitle", style: "margin-top:16px", text: "這次可以學的字" }), h("div", { class: "fix" }, h("div", { class: "better", style: "color:var(--text);font-size:15px;font-weight:500", text: a.word })));
     body.replaceChildren(...kids);
   }

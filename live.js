@@ -273,6 +273,7 @@ class LiveSession {
     let data = pcm;
     // Without headphones the speaker would feed the microphone, so keep the mic silent while the caller talks.
     if (!this.o.allowBargeIn() && this.speaking()) data = new Int16Array(pcm.length);
+    if (this.o.meter) this.o.meter.feed(data, this.ctx.currentTime - 0.04);
     this.send({ realtimeInput: { audio: { mimeType: "audio/pcm;rate=16000", data: b64FromBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength)) } } });
     if (++this.sent === 1) this.o.onLog("開始傳送麥克風聲音");
   }
@@ -295,6 +296,7 @@ class LiveSession {
     const t = Math.max(now + 0.04, this.nextTime);
     s.start(t);
     this.nextTime = t + buf.duration / rate;
+    if (this.o.meter) this.o.meter.modelSpan(t, this.nextTime);
     this.sources.add(s);
     s.onended = () => this.sources.delete(s);
   }
@@ -303,6 +305,7 @@ class LiveSession {
     for (const s of this.sources) { try { s.onended = null; s.stop(); } catch (e) {} }
     this.sources.clear();
     this.nextTime = 0;
+    if (this.o.meter) this.o.meter.cutModel(this.ctx.currentTime);
   }
 
   stopAudio() {
@@ -342,13 +345,18 @@ async function discoverTextModels(apiKey) {
 }
 
 async function geminiGenerate(apiKey, models, text, json) {
+  return geminiGenerateParts(apiKey, models, [{ text }], json);
+}
+
+/** Like geminiGenerate, but the request can carry several parts (text plus audio). */
+async function geminiGenerateParts(apiKey, models, parts, json) {
   let last = null;
   let list = [];
   try { list = await discoverTextModels(apiKey); } catch (e) { last = e; }
   for (const m of models) if (!list.includes(m)) list.push(m);
   for (const m of list) {
     try {
-      const body = { contents: [{ parts: [{ text }] }] };
+      const body = { contents: [{ parts }] };
       if (json) body.generationConfig = { responseMimeType: "application/json", temperature: 0.4 };
       const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent?key=" + encodeURIComponent(apiKey), {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)

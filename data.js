@@ -428,7 +428,7 @@ ${styleLine}
 const DESK_CUE = "(The conversation just started. Say your opening line now.)";
 
 /** Full prompt for a live spoken conversation (not a phone call). */
-function deskPrompt(topic, style, userName, level, persona, speed, fixMode, simple) {
+function deskPrompt(topic, style, userName, level, persona, speed, fixMode, simple, warm) {
   const base = systemPrompt(topic, style, userName, level, persona.name, fixMode);
   const slow = level <= 2
     ? " Speak noticeably slower than normal conversation, pause briefly between phrases, and pronounce every word clearly and distinctly, as if talking to an English learner."
@@ -436,7 +436,10 @@ function deskPrompt(topic, style, userName, level, persona, speed, fixMode, simp
   const pace = speed === 2 ? " The learner wants you to speak VERY slowly and deliberately: one short phrase at a time, clear pauses between phrases, every word pronounced distinctly."
     : speed === 1 ? " The learner wants you to speak more slowly than normal, with short pauses between phrases and clearly pronounced words." : "";
   const easy = simple ? " The learner finds your English too hard right now: use simpler everyday words and shorter sentences than usual, no slang and no idioms, and speak a little slower." : "";
-  return base + slow + pace + easy +
+  const warmLine = warm && warm.length
+    ? "\n\nThe learner has just looked at these useful phrases for this situation: " + warm.map(p => '"' + p.en + '"').join("; ") + ". Without mentioning them or quizzing the learner, steer the conversation so that they get natural chances to use some of them."
+    : "";
+  return base + slow + pace + easy + warmLine +
     "\n\nThis is a LIVE spoken conversation inside a language-practice app. It is NOT a phone call: the two of you are simply talking to each other. " +
     "Ignore any mention of phones, calling, answering, picking up or hanging up in the scenario above and treat it as the two of you talking directly in that situation. " +
     "Your words are spoken aloud. They may interrupt you; if they do, stop and answer what they said. " +
@@ -508,3 +511,57 @@ Return ONLY JSON: {"en":"the best way to say it","alt":"one alternative (empty s
 
 What they want to say:
 `.trim();
+
+
+const DESK_WARM_PROMPT = `
+An English learner (a native Chinese speaker, level LEVEL of 5, where 1 is beginner and 5 is advanced) is about to practise speaking in this situation:
+SCENARIO
+
+Give exactly 6 short, useful spoken sentences or phrases the learner is likely to need in this situation, matched to their level (simple and short for levels 1-2, natural everyday for level 3, richer for levels 4-5). Mix openers, replies, questions to ask, and polite ways to ask for repetition or clarification. No slang.
+Return ONLY JSON: {"phrases":[{"en":"the English phrase","zh":"its meaning in Traditional Chinese"}]}
+`.trim();
+
+const DESK_MONO_PROMPT = `
+You are an English speaking coach. The attached audio is a learner (a native Chinese speaker) speaking alone for about SECONDS seconds on this prompt: "TOPIC".
+
+1. Transcribe EXACTLY what the learner said, word for word, keeping hesitations such as "um", "uh", "er", repeated words and false starts. Write [unclear] for anything you cannot understand. Do not clean up or correct the speech and do not add words they did not say.
+2. List the learner's MOST SERIOUS mistakes (at most 5): wrong or missing verb form or tense, subject-verb disagreement in a basic sentence, wrong word order, a missing essential word, a wrong word that blurs the meaning, two structures mixed together. Do NOT list articles, plural endings, prepositions natives would let pass, filler words, or anything that might be a recognition error. For each: "said" = the learner's exact words copied from YOUR transcript (a short stretch, at most one sentence), "better" = a natural corrected version, "why" = one short, kind reason in Traditional Chinese, "sev" = 3 if serious, 2 if noticeable.
+3. "fillers" = how many times you heard a hesitation sound (um, uh, er, hmm).
+4. "praise" = one short, genuine, encouraging sentence in Traditional Chinese. "tip" = one short, concrete tip in Traditional Chinese to speak more fluently next time (about structure or flow, not pronunciation scores).
+
+Return ONLY JSON: {"transcript":"","fillers":0,"errors":[{"said":"","better":"","why":"","sev":3}],"praise":"","tip":""}
+If there is no intelligible English speech, return {"transcript":"","fillers":0,"errors":[],"praise":"","tip":""}.
+`.trim();
+
+const MONO_PROMPTS = [
+  { en: "Describe your favorite place to relax.", zh: "描述你最喜歡用來放鬆的地方。" },
+  { en: "Talk about a meal you will never forget.", zh: "說說一頓你永遠忘不了的餐。" },
+  { en: "Describe your typical weekday morning.", zh: "描述你平常上班／上課日的早晨。" },
+  { en: "What is a skill you would like to learn, and why?", zh: "你想學什麼技能？為什麼？" },
+  { en: "Tell me about a trip you really enjoyed.", zh: "說說一趟你很享受的旅行。" },
+  { en: "Describe a person who has influenced you.", zh: "描述一個影響過你的人。" },
+  { en: "What do you usually do on weekends?", zh: "你週末通常做什麼？" },
+  { en: "Talk about your favorite movie or TV show.", zh: "聊聊你最喜歡的電影或影集。" },
+  { en: "Describe your home town to someone who has never been there.", zh: "向沒去過的人介紹你的家鄉。" },
+  { en: "What is the best advice you have ever received?", zh: "你收過最好的建議是什麼？" },
+  { en: "Talk about a problem you solved recently.", zh: "說說你最近解決的一個問題。" },
+  { en: "Describe your ideal day off.", zh: "描述你理想中的休假日。" },
+  { en: "Tell me about your job or your studies.", zh: "介紹你的工作或學業。" },
+  { en: "What kind of music do you like, and when do you listen to it?", zh: "你喜歡什麼音樂？什麼時候聽？" },
+  { en: "Talk about a time you felt proud of yourself.", zh: "說說一次你為自己感到驕傲的經驗。" },
+  { en: "Describe a gift you gave or received that meant a lot.", zh: "描述一份對你很有意義的禮物。" },
+  { en: "How do you stay healthy?", zh: "你怎麼保持健康？" },
+  { en: "What is a place you would like to visit, and why?", zh: "你想去哪裡旅行？為什麼？" },
+  { en: "Talk about a hobby you enjoy.", zh: "聊聊你的一個興趣。" },
+  { en: "Describe a festival or holiday in your country.", zh: "介紹你的國家的一個節日。" },
+  { en: "What do you think about working from home?", zh: "你覺得在家工作如何？" },
+  { en: "Tell me about a friend you have known for a long time.", zh: "介紹一位認識很久的朋友。" },
+  { en: "Talk about a mistake you learned from.", zh: "說說一個讓你學到東西的錯誤。" },
+  { en: "Describe your favorite food and how it is made.", zh: "描述你最愛的食物，以及怎麼做。" },
+  { en: "How has technology changed your daily life?", zh: "科技怎麼改變了你的日常生活？" },
+  { en: "Talk about something you are looking forward to.", zh: "說說你期待的一件事。" },
+  { en: "Describe the best teacher or boss you have had.", zh: "描述你遇過最好的老師或主管。" },
+  { en: "What would you do if you had a free month?", zh: "如果你有一個月的空檔，你會做什麼？" },
+  { en: "Talk about a place in your city that visitors should see.", zh: "介紹你的城市裡值得遊客去的地方。" },
+  { en: "Explain how to do something you are good at, step by step.", zh: "一步一步說明一件你拿手的事怎麼做。" }
+];
