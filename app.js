@@ -1,10 +1,12 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "1.6";
+const VERSION = "1.7";
 const REFRESH_MS = window.__REFRESH_MS || 300000; // open a fresh connection every ~5 min (sessions went silent after ~7 min)
-const WAITS = [1000, 1800, 2800];
-const WAIT_NAMES = ["一般", "長一點（建議）", "很長"];
+const WAITS = [1000, 1800, 2800, 600];
+const WAIT_NAMES = ["一般", "長一點（建議）", "很長", "很快（回得快，但容易被搶話）"];
+const FIX_KEYS = ["none", "recast", "brief"];
+const FIX_NAMES = ["不糾正（結束後才給重點）", "自然複述（順口說出正確的版本）", "簡短指正（每次一句提醒）"];
 const SPEED_NAMES = ["正常", "慢", "更慢"];
 const MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash"];
 
@@ -85,7 +87,7 @@ function toggleFullscreen() {
 
 const DEFAULTS = {
   key: "", liveModel: "", persona: "random", topicId: "random", level: 3, style: "chatty",
-  userName: "", speed: 0, wait: 1, goalMin: 15, bargeIn: false, manual: false, customTopics: []
+  userName: "", speed: 0, wait: 1, goalMin: 15, bargeIn: false, manual: false, hold: false, fix: 0, customTopics: []
 };
 let P = Object.assign({}, DEFAULTS);
 try { Object.assign(P, JSON.parse(localStorage.getItem("desk_prefs") || "{}")); } catch (e) {}
@@ -119,6 +121,11 @@ const Errs = {
   setDone(id, v) { const l = this.all(); const r = l.find(x => x.id === id); if (r) { r.done = v; this.put(l); } },
   remove(id) { this.put(this.all().filter(x => x.id !== id)); },
   clear() { try { localStorage.removeItem("desk_errors"); } catch (e) {} }
+};
+
+const Phrases = {
+  all() { try { return JSON.parse(localStorage.getItem("desk_phrases") || "[]"); } catch (e) { return []; } },
+  add(p) { try { const l = this.all(); l.unshift(p); localStorage.setItem("desk_phrases", JSON.stringify(l)); } catch (e) {} }
 };
 
 const Diag = {
@@ -217,6 +224,7 @@ function buildStart(root) {
     grid.appendChild(el);
   });
   const styleSel = h("select", { class: "field" },
+    h("option", { value: "teacher", text: "英文老師（耐心引導、教你說法）" }),
     h("option", { value: "chatty", text: "活潑親切（愛聊生活小事）" }),
     h("option", { value: "focused", text: "簡潔直接（比較正經）" }),
     h("option", { value: "gentle", text: "溫柔鼓勵（多肯定、有耐心）" }),
@@ -224,6 +232,9 @@ function buildStart(root) {
     h("option", { value: "funny", text: "幽默風趣（愛開玩笑）" }));
   styleSel.value = P.style;
   styleSel.addEventListener("change", () => { P.style = styleSel.value; savePrefs(); });
+  const fixSel = h("select", { class: "field" }, FIX_NAMES.map((n, i) => h("option", { value: String(i), text: n })));
+  fixSel.value = String(P.fix || 0);
+  fixSel.addEventListener("change", () => { P.fix = parseInt(fixSel.value, 10) || 0; savePrefs(); });
   const speedSel = h("select", { class: "field" }, SPEED_NAMES.map((n, i) => h("option", { value: String(i), text: n })));
   speedSel.value = String(P.speed);
   speedSel.addEventListener("change", () => { P.speed = parseInt(speedSel.value, 10) || 0; savePrefs(); });
@@ -234,12 +245,15 @@ function buildStart(root) {
     on: { input: () => { P.userName = nameIn.value.trim(); savePrefs(); } } });
   const personaCard = card("對話對象", grid, note("每位的臉、聲音、名字都是固定的。選「隨機」每次會換一位。"), gap(10),
     h("div", { class: "flabel", text: "對方說話風格" }), styleSel, gap(10),
+    h("div", { class: "flabel", text: "說錯時，對方要怎麼處理" }), fixSel, note("選「英文老師」風格時，建議搭配「自然複述」。結束後的重點整理不受影響。"), gap(10),
     h("div", { class: "flabel", text: "對方說話速度（對話中也能隨時調整）" }), speedSel, gap(10),
     h("div", { class: "flabel", text: "你停頓多久，對方才開始回答" }), waitSel, gap(10),
     h("div", { class: "flabel", text: "你的稱呼" }), nameIn);
 
   const startCard = h("div", {},
-    sw("說完後由我按鈕，對方才回答", "開啟後，你要按「開始說話」，說完再按「說完了」（或空白鍵）；不會因為你停頓一下就被搶話。", P.manual, (v) => { P.manual = v; savePrefs(); }),
+    sw("說完後由我按鈕，對方才回答", "開啟後，你要按「開始說話」，說完再按「說完了」（或空白鍵）；不會因為你停頓一下就被搶話。對話中也能隨時切換。", P.manual, (v) => { P.manual = v; savePrefs(); }),
+    gap(8),
+    sw("手動模式：按住說話", "開啟後，改成按住按鈕（或按住空白鍵）說話，放開就送出，像對講機。", P.hold, (v) => { P.hold = v; savePrefs(); }),
     gap(8),
     h("button", { class: "btn gold big", text: "開始對話", on: { click: beginTalk } }),
     note("建議戴耳機，避免喇叭的聲音被麥克風收回去。第一次使用瀏覽器會詢問麥克風權限，請按「允許」。"));
@@ -280,7 +294,7 @@ async function beginTalk() {
   const ctx = ensureAC();
   const persona = drawPersona(P.persona), topic = drawTopic(P.topicId, P.customTopics);
   D = { persona, topic, level: P.level, manual: P.manual, t0: Date.now(), startMs: Date.now(), msgs: [], muted: false, live: null, stream: null,
-    ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "" };
+    ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "", simple: false, help: { starters: null, loading: false, q: [], qLoading: false, err: "", draft: "" } };
   msgEls = new Map();
   logLine("對話開始 " + persona.name + " / " + topic.label + " / 難度 " + P.level + (P.manual ? " / 手動結束發言" : ""));
   buildTalk();
@@ -301,7 +315,7 @@ async function beginTalk() {
 function startLive(recover) {
   const mine = D;
   const hist = recover ? mine.msgs.filter(m => m.text.trim()).slice(-14).map(m => (m.who === "me" ? "Learner: " : "You: ") + m.text.trim()).join("\n") : "";
-  const system = deskPrompt(mine.topic, P.style, P.userName, mine.level, mine.persona, P.speed) +
+  const system = deskPrompt(mine.topic, P.style, P.userName, mine.level, mine.persona, P.speed, FIX_KEYS[P.fix] || "none", mine.simple) +
     (recover === "refresh"
       ? "\n\nThe conversation is already in progress and you are continuing it on a fresh connection. What was said so far (the \"You\" lines are yours):\n" + hist + "\nDo NOT greet, do not mention any interruption, and do not speak first: stay silent until the learner speaks, then reply naturally to what they say, as if nothing happened."
       : recover ? "\n\nThe conversation was just interrupted by a short connection problem and you are resuming it. What was said so far (the \"You\" lines are yours):\n" + hist + "\nContinue naturally from there." : "");
@@ -478,6 +492,80 @@ function toggleTalk() {
   paintBar();
 }
 
+// "hold to talk" (walkie-talkie style): press starts, letting go sends
+let holdDown = false;
+function pressTalk() {
+  if (!D || D.ended || !D.live || !D.manual) return;
+  holdDown = true;
+  if (!D.live.talking) D.live.startTalk();
+  paintBar();
+}
+function releaseTalk() {
+  if (!holdDown) return;
+  holdDown = false;
+  if (D && !D.ended && D.live && D.live.talking) D.live.endTalk();
+  paintBar();
+}
+document.addEventListener("pointerup", releaseTalk);
+document.addEventListener("pointercancel", releaseTalk);
+window.addEventListener("blur", releaseTalk);
+
+/** Switch between automatic and button turn-taking in the middle of the conversation. */
+function switchManual() {
+  if (!D || D.ended || !D.live || !D.live.ready) { toast("連線完成後才能切換"); return; }
+  D.manual = !D.manual;
+  logLine("切換成" + (D.manual ? "手動" : "自動") + "模式");
+  reconnectTalk(false, "refresh");
+  setNote(D.manual ? "已切換成手動：要說話時按「" + (P.hold ? "按住說話" : "開始說話") + "」" : "已切換成自動：直接說話就好");
+}
+
+function toggleSimple() {
+  if (!D || D.ended) return;
+  D.simple = !D.simple;
+  logLine(D.simple ? "請對方說簡單一點" : "取消「說簡單一點」");
+  if (D.live) D.live.sendNote(SIMPLER_NOTES[D.simple ? 1 : 0]);
+  paintBar();
+}
+
+// ---- "幫我說": starters when stuck, and "how do I say this"
+
+function openHelp() {
+  if (!D) return;
+  D.tab = "help"; paintPanel();
+  if (!D.help.starters && !D.help.loading) fetchStarters();
+}
+
+async function fetchStarters() {
+  const d = D, hp = d.help;
+  hp.loading = true; hp.err = ""; paintPanel();
+  const recent = d.msgs.filter(m => m.text.trim()).slice(-8).map(m => (m.who === "me" ? "Learner: " : "You: ") + m.text.trim()).join("\n") || "(the conversation has not started yet)";
+  const prompt = DESK_STARTERS_PROMPT.replace(/LEVEL/g, String(d.level)).replace("TOPIC", d.topic.label) + "\n" + recent;
+  try {
+    const o = parseJson(await geminiGenerate(P.key, MODELS, prompt, true));
+    hp.starters = (Array.isArray(o.starters) ? o.starters : []).filter(x => x && x.en).slice(0, 3).map(x => ({ en: String(x.en).trim(), zh: String(x.zh || "").trim() }));
+    if (!hp.starters.length) hp.err = "這次沒有想到好句子，再按一次試試。";
+  } catch (e) { hp.err = "取得建議失敗：" + (((e && e.message) || String(e)).slice(0, 120)); }
+  hp.loading = false;
+  if (D === d && d.tab === "help") paintPanel();
+}
+
+async function askHowSay(text) {
+  const d = D, hp = d.help;
+  text = String(text || "").trim();
+  if (!text || hp.qLoading) return;
+  hp.qLoading = true; hp.err = ""; paintPanel();
+  try {
+    const o = parseJson(await geminiGenerate(P.key, MODELS, DESK_HOWSAY_PROMPT.replace(/LEVEL/g, String(d.level)) + "\n" + text, true));
+    const en = String(o.en || "").trim();
+    if (!en) throw new Error("沒有得到結果");
+    const item = { src: text, en, alt: String(o.alt || "").trim(), note: String(o.note || "").trim() };
+    hp.q.unshift(item); hp.draft = "";
+    Phrases.add({ id: String(Date.now()), ts: Date.now(), src: item.src, en: item.en, alt: item.alt, topic: d.topic.label });
+  } catch (e) { hp.err = "查詢失敗：" + (((e && e.message) || String(e)).slice(0, 120)); }
+  hp.qLoading = false;
+  if (D === d && d.tab === "help") paintPanel();
+}
+
 function buildTalk() {
   const root = $("talk");
   root.classList.remove("hidden");
@@ -512,7 +600,7 @@ function statusText() {
   if (!L.gotAudio && !D.msgs.length) return ["ai", "對方準備開口…"];
   if (D.stuck) return ["", "對方好像沒有回應，可以按右邊的按鈕"];
   if (D.muted) return ["", "麥克風已靜音"];
-  if (D.manual) return L.talking ? ["me", "正在收音…說完請按「說完了」"] : (L.speaking() ? ["ai", "對方說話中…"] : ["", "輪到你：按「開始說話」或空白鍵"]);
+  if (D.manual) return L.talking ? ["me", P.hold ? "正在收音…放開就送出" : "正在收音…說完請按「說完了」"] : (L.speaking() ? ["ai", "對方說話中…"] : ["", P.hold ? "輪到你：按住「按住說話」或空白鍵" : "輪到你：按「開始說話」或空白鍵"]);
   return L.speaking() ? ["ai", "對方說話中…"] : ["me", "輪到你說話了"];
 }
 
@@ -525,11 +613,20 @@ function paintBar() {
       h("button", { class: "pill", text: "重新連線", on: { click: (e) => { e.currentTarget.blur(); logLine("手動重新連線"); reconnectTalk(false, "drop"); } } }));
   }
   if (!D.ended) {
-    kids.push(h("div", { class: "row", style: "gap:4px" }, h("span", { class: "sub", style: "font-size:13px;margin-right:2px", text: "語速" }),
-      SPEED_NAMES.map((n, i) => h("button", { class: "pill" + (P.speed === i ? " on" : ""), style: "height:34px;padding:0 12px", text: n, on: { click: (e) => {
-        e.currentTarget.blur(); P.speed = i; savePrefs(); logLine("語速：" + n); if (D.live) D.live.setPace(i); paintBar(); } } }))));
-    if (D.manual) kids.push(h("button", { class: "talkbtn" + (D.live && D.live.talking ? " on" : ""), id: "talkbtn", text: D.live && D.live.talking ? "✓ 說完了" : "🎤 開始說話", on: { click: (e) => { e.currentTarget.blur(); toggleTalk(); } } }));
-    kids.push(h("button", { class: "pill mute" + (D.muted ? " on" : ""), text: D.muted ? "取消靜音" : "靜音", on: { click: (e) => { e.currentTarget.blur(); D.muted = !D.muted; logLine(D.muted ? "靜音" : "取消靜音"); paintBar(); } } }));
+    if (D.manual) {
+      const talking = !!(D.live && D.live.talking);
+      kids.push(P.hold
+        ? h("button", { class: "talkbtn" + (talking ? " on" : ""), id: "talkbtn", text: talking ? "● 放開就送出" : "🎤 按住說話", on: { pointerdown: (e) => { e.preventDefault(); pressTalk(); } } })
+        : h("button", { class: "talkbtn" + (talking ? " on" : ""), id: "talkbtn", text: talking ? "✓ 說完了" : "🎤 開始說話", on: { click: (e) => { e.currentTarget.blur(); toggleTalk(); } } }));
+    }
+    kids.push(
+      h("button", { class: "pill gold", id: "stuckbtn", text: "我卡住了", on: { click: (e) => { e.currentTarget.blur(); openHelp(); } } }),
+      h("button", { class: "pill" + (D.simple ? " on" : ""), id: "simplebtn", text: "說簡單一點", on: { click: (e) => { e.currentTarget.blur(); toggleSimple(); } } }),
+      h("button", { class: "pill" + (D.manual ? " on" : ""), id: "manualbtn", text: D.manual ? "手動：開" : "手動：關", title: "切換自動／手動說話", on: { click: (e) => { e.currentTarget.blur(); switchManual(); } } }),
+      h("button", { class: "pill mute" + (D.muted ? " on" : ""), text: D.muted ? "取消靜音" : "靜音", on: { click: (e) => { e.currentTarget.blur(); D.muted = !D.muted; logLine(D.muted ? "靜音" : "取消靜音"); paintBar(); } } }),
+      h("div", { class: "row", style: "gap:4px" }, h("span", { class: "sub", style: "font-size:13px;margin-right:2px", text: "語速" }),
+        SPEED_NAMES.map((n, i) => h("button", { class: "pill" + (P.speed === i ? " on" : ""), style: "height:34px;padding:0 12px", text: n, on: { click: (e) => {
+          e.currentTarget.blur(); P.speed = i; savePrefs(); logLine("語速：" + n); if (D.live) D.live.setPace(i); paintBar(); } } }))));
   }
   bar.replaceChildren(...kids);
 }
@@ -609,7 +706,8 @@ function paintPanel() {
   const tabs = $("ptabs"), body = $("pbody"); if (!tabs || !body || !D) return;
   tabs.replaceChildren(
     h("button", { class: D.tab === "fix" ? "on" : "", text: "更正", on: { click: () => { D.tab = "fix"; paintPanel(); } } }),
-    h("button", { class: D.tab === "sum" ? "on" : "", text: "本次摘要", on: { click: () => { D.tab = "sum"; paintPanel(); } } }));
+    h("button", { class: D.tab === "sum" ? "on" : "", text: "本次摘要", on: { click: () => { D.tab = "sum"; paintPanel(); } } }),
+    h("button", { class: D.tab === "help" ? "on" : "", text: "幫我說", on: { click: () => { D.tab = "help"; paintPanel(); } } }));
   const a = D.analysis;
   if (D.tab === "fix") {
     if (!D.ended) body.replaceChildren(h("div", { class: "empty", style: "white-space:pre-line;margin-top:40px", text: "放心說，說錯也沒關係。\n對話中不會打斷你，\n結束後這裡會列出幾個值得注意的地方。" }));
@@ -625,6 +723,24 @@ function paintPanel() {
       } else kids.push(h("div", { class: "sub", style: "line-height:1.6", text: "這次沒有需要特別提醒的地方，說得很好！" }));
       body.replaceChildren(...kids);
     }
+  } else if (D.tab === "help") {
+    const hp = D.help, kids = [];
+    kids.push(h("div", { class: "ptitle", text: "不知道怎麼接？" }),
+      h("button", { class: "pill gold", id: "starterbtn", text: hp.loading ? "想一下…" : (hp.starters ? "再給我幾個" : "給我開頭句"), on: { click: () => { if (!hp.loading) fetchStarters(); } } }));
+    if (hp.starters) hp.starters.forEach(s => kids.push(h("div", { class: "fix starter" }, h("div", { class: "better", text: s.en }), s.zh ? h("div", { class: "why", text: s.zh }) : null,
+      h("div", { class: "acts" }, h("button", { class: "pill", text: "複製", on: { click: () => copyText(s.en) } })))));
+    const inp = h("input", { class: "field", id: "howsay", type: "text", placeholder: "輸入中文，或你想說的句子", on: {
+      input: () => { hp.draft = inp.value; },
+      keydown: (e) => { if (e.key === "Enter") { e.preventDefault(); askHowSay(inp.value); } } } });
+    inp.value = hp.draft || "";
+    kids.push(h("div", { class: "ptitle", style: "margin-top:18px", text: "這句英文怎麼說？" }),
+      h("div", { class: "row" }, h("div", { class: "grow" }, inp), h("button", { class: "pill gold", id: "howsaybtn", text: hp.qLoading ? "查詢中…" : "查", on: { click: () => askHowSay(inp.value) } })));
+    if (hp.err) kids.push(h("div", { class: "sub", style: "color:#FF9C9C;margin-top:10px", text: hp.err }));
+    hp.q.forEach(x => kids.push(h("div", { class: "fix howsay" }, h("div", { class: "why", style: "margin:0 0 4px", text: x.src }), h("div", { class: "better", text: x.en }),
+      x.alt ? h("div", { class: "why", text: "也可以說：" + x.alt }) : null, x.note ? h("div", { class: "why", text: x.note }) : null,
+      h("div", { class: "acts" }, h("button", { class: "pill", text: "複製", on: { click: () => copyText(x.en) } })))));
+    if (hp.q.length) kids.push(h("div", { class: "sub", style: "font-size:12.5px;margin-top:6px", text: "查過的句子會自動存起來，之後可以拿來複習。" }));
+    body.replaceChildren(...kids);
   } else {
     const secs = ((D.ended ? D.endMs : Date.now()) - D.startMs) / 1000;
     const mine = D.msgs.filter(m => m.who === "me" && m.text.trim());
@@ -639,15 +755,22 @@ function paintPanel() {
   }
 }
 
-// ---- keyboard: Space = start/finish speaking in manual mode
+// ---- keyboard: Space = start/finish speaking in manual mode (or hold it down to talk)
 document.addEventListener("keydown", (e) => {
   if (e.code !== "Space" || !D || D.ended || !D.manual || $("talk").classList.contains("hidden")) return;
   const tg = e.target && e.target.tagName;
   if (tg === "INPUT" || tg === "TEXTAREA" || tg === "SELECT") return;
   e.preventDefault();
-  if (!e.repeat) toggleTalk();
+  if (e.repeat) return;
+  if (P.hold) pressTalk(); else toggleTalk();
 });
-document.addEventListener("keyup", (e) => { if (e.code === "Space" && D && !D.ended && D.manual && !$("talk").classList.contains("hidden")) e.preventDefault(); });
+document.addEventListener("keyup", (e) => {
+  if (e.code !== "Space" || !D || D.ended || !D.manual || $("talk").classList.contains("hidden")) return;
+  const tg = e.target && e.target.tagName;
+  if (tg === "INPUT" || tg === "TEXTAREA" || tg === "SELECT") return;
+  e.preventDefault();
+  if (P.hold) releaseTalk();
+});
 document.addEventListener("visibilitychange", () => {
   if (D && !D.ended) { logLine(document.visibilityState === "visible" ? "回到前景" : "網頁被切到背景"); if (document.visibilityState === "visible") keepAwake(true); }
 });

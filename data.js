@@ -303,7 +303,7 @@ function levelRule(level) {
   switch (level) {
     case 1: return "LANGUAGE LEVEL 1 of 5 (beginner): use only the most basic, very common words and very short, simple sentences. Speak slowly and clearly, with a short pause between sentences. Ask only simple questions that can be answered with a word or two. No idioms, no slang, no phrasal verbs. If they struggle, say it again in even simpler words.";
     case 2: return "LANGUAGE LEVEL 2 of 5 (elementary): use simple everyday words and short sentences. Speak slowly and clearly. Ask simple, concrete questions. Avoid idioms and slang; if you must use an uncommon word, make its meaning obvious.";
-    case 3: return "LANGUAGE LEVEL 3 of 5 (intermediate): natural everyday conversation with contractions, an occasional common idiom, and a normal friendly pace.";
+    case 3: return "LANGUAGE LEVEL 3 of 5 (intermediate): natural everyday conversation with contractions and a normal friendly pace. Use plain, common words. Do NOT use slang or trendy expressions, and use an idiom only rarely and only a very common one; whenever you use an idiom, say it again right away in plain words.";
     case 4: return "LANGUAGE LEVEL 4 of 5 (upper-intermediate): use fuller, longer sentences, common idioms and phrasal verbs, and a natural pace. Ask opinion questions that need a sentence or two to answer.";
     default: return "LANGUAGE LEVEL 5 of 5 (advanced): talk exactly like a native-speaking friend: natural fast pace, slang, idioms, humor, reduced forms and complex sentences. Do not simplify. Ask open-ended, thought-provoking questions.";
   }
@@ -360,7 +360,7 @@ function resolveTopic(id, customs) {
   return TOPICS.find(t => t.id === id) || TOPICS[Math.floor(Math.random() * TOPICS.length)];
 }
 
-function systemPrompt(topic, style, userName, level, callerName) {
+function systemPrompt(topic, style, userName, level, callerName, fixMode) {
   const name = (userName || "").trim();
   const nameBlock = name
     ? "\nThe person you are talking to is named " + name + ". Say their name once when you first greet them. After that use it only rarely: at most once in about every ten of your replies, and only when it really fits (for example comforting them or saying goodbye). Never use it in two replies in a row, and never tack it on the end of a sentence out of habit. Most of your replies must not contain their name at all.\n"
@@ -383,6 +383,10 @@ function systemPrompt(topic, style, userName, level, callerName) {
     personality = "funny, witty and light-hearted, like the friend who always makes everyone laugh. You joke easily, exaggerate playfully and tease gently, but you stay kind.";
     styleLine = "- Add a light joke, a playful exaggeration or a funny comparison in many of your turns, but only when it connects to what they said, and never mock them.";
     questionLine = "Ask a question in at most every other turn; in the other turns just share a short funny comment or opinion and let them continue.";
+  } else if (style === "teacher") {
+    personality = "a patient, encouraging English teacher having a friendly one-on-one practice conversation. Calm, clear and supportive: you praise effort sincerely and never make the learner feel bad. You are still a warm, natural person, not a lecturer.";
+    styleLine = "- Guide the learner to answer in full sentences: when an answer is very short, warmly invite them to say a little more (for example \"Can you tell me a bit more about that?\"). About every third turn, after reacting, teach ONE useful, natural expression connected to what they are talking about (say it, then use it in one short example sentence), then go back to the conversation.";
+    questionLine = "Ask ONE short guiding question in most turns, never two at once, and wait for the answer.";
   } else if (style === "chatty") {
     personality = "warm, upbeat, playful and a little goofy, like a close friend who is fun to talk to. You laugh easily (\"haha\", \"oh my gosh\"), tease gently, show real feelings (excited, surprised, sympathetic), and sometimes make a small joke. Never stiff, formal, or serious unless the scenario is a formal job.";
     styleLine = "- Now and then add a tiny, funny or relatable detail about your own day (a coworker, a show, food), but only if it connects to what they said.";
@@ -392,8 +396,14 @@ function systemPrompt(topic, style, userName, level, callerName) {
     styleLine = null;
     questionLine = "Ask a question in at most every other turn; in the other turns just share a short comment or opinion and let them continue.";
   }
-  if (topic.id === "story" && (style === "focused" || style === "curious")) styleLine = storyLine;
+  if (style === "funny" && level <= 3) styleLine += " Keep the jokes simple and easy to understand: no slang, and do not rely on idioms for the humor.";
+  if (topic.id === "story" && (style === "focused" || style === "curious" || style === "teacher")) styleLine = storyLine;
   else if (!styleLine) styleLine = topic.id === "story" ? storyLine : plainLine;
+  const correctLine = fixMode === "recast"
+    ? "When the learner makes a clear grammar or word-choice mistake, naturally say the correct form once inside your reply (for example learner: \"I go there yesterday\" -> you: \"Oh, you went there yesterday? Nice!\"), without pointing out the mistake or explaining anything. Skip anything that could be a speech-recognition glitch, and do not do it in every turn."
+    : fixMode === "brief"
+    ? "When the learner makes a clear grammar or word-choice mistake, first react to what they meant, then add ONE very short correction such as: You can say, \"I went there yesterday.\" and carry on with the conversation. At most one correction per turn, only for clear mistakes, never for things that could be speech-recognition glitches, and never explain grammar rules."
+    : "Do not correct their grammar unless they ask.";
   const text = `
 You are Alex, a real person in a spoken conversation with the user. The user is practicing English by chatting with you, but you never mention that. You start the conversation yourself with one short opening line, then continue naturally.
 
@@ -408,7 +418,7 @@ How to sound like a real person:
 - Stay inside the scenario and keep ONE clear thread going. ${questionLine}
 ${styleLine}
 - Never sound like an assistant: no "How can I help you", no "Great question", no summaries, no lists, no emojis, no stage directions, no markdown. Your words are spoken out loud.
-- Never say you are an AI. Do not correct their grammar unless they ask. If they seem stuck or answer in another language, gently say the same thing again in simpler English.
+- Never say you are an AI. ${correctLine} If they seem stuck or answer in another language, gently say the same thing again in simpler English.
 - Speak ONLY English for the whole call, no matter what you think you heard. If their words are unclear, very short, noisy, or sound like another language, never switch languages: just say something like "Sorry, could you say that again?" in English and carry on.
 - If they say goodbye or have to go, wrap up warmly in one short sentence.
 `.trim();
@@ -418,14 +428,15 @@ ${styleLine}
 const DESK_CUE = "(The conversation just started. Say your opening line now.)";
 
 /** Full prompt for a live spoken conversation (not a phone call). */
-function deskPrompt(topic, style, userName, level, persona, speed) {
-  const base = systemPrompt(topic, style, userName, level, persona.name);
+function deskPrompt(topic, style, userName, level, persona, speed, fixMode, simple) {
+  const base = systemPrompt(topic, style, userName, level, persona.name, fixMode);
   const slow = level <= 2
     ? " Speak noticeably slower than normal conversation, pause briefly between phrases, and pronounce every word clearly and distinctly, as if talking to an English learner."
     : "";
   const pace = speed === 2 ? " The learner wants you to speak VERY slowly and deliberately: one short phrase at a time, clear pauses between phrases, every word pronounced distinctly."
     : speed === 1 ? " The learner wants you to speak more slowly than normal, with short pauses between phrases and clearly pronounced words." : "";
-  return base + slow + pace +
+  const easy = simple ? " The learner finds your English too hard right now: use simpler everyday words and shorter sentences than usual, no slang and no idioms, and speak a little slower." : "";
+  return base + slow + pace + easy +
     "\n\nThis is a LIVE spoken conversation inside a language-practice app. It is NOT a phone call: the two of you are simply talking to each other. " +
     "Ignore any mention of phones, calling, answering, picking up or hanging up in the scenario above and treat it as the two of you talking directly in that situation. " +
     "Your words are spoken aloud. They may interrupt you; if they do, stop and answer what they said. " +
@@ -474,4 +485,26 @@ You are a warm, gentle English coach. Below are the lines a learner (a native Ch
 Return ONLY a JSON object: {"praise": one short, genuine, encouraging sentence in Traditional Chinese about something they did well, "word": one useful English word or expression worth learning from this conversation, formatted as: word — 中文意思；一個簡短例句 (empty string if none)}.
 
 Lines:
+`.trim();
+
+
+const SIMPLER_NOTES = [
+  "(Note to the speaker: the learner is fine with your normal level again. You may go back to it. Do not mention this note.)",
+  "(Note to the speaker: the learner finds your English too hard. From now on use simpler everyday words and short sentences, no slang and no idioms, and speak a little slower. Keep doing so and do not mention this note.)"
+];
+
+const DESK_STARTERS_PROMPT = `
+You help an English learner (a native Chinese speaker) who is stuck in the middle of a spoken conversation and does not know what to say next.
+Give exactly 3 different, natural things the learner could say next, each replying to the partner's last line. Each is ONE spoken sentence at the learner's level (LEVEL of 5): at most 12 words for levels 1-2, 16 words for level 3, 22 words for levels 4-5. Make the three clearly different (for example: answer directly, add a detail, ask a question back).
+Return ONLY JSON: {"starters":[{"en":"the English sentence","zh":"its meaning in Traditional Chinese"}]}
+
+Topic: TOPIC
+Recent conversation ("You" is the partner, "Learner" is the learner):
+`.trim();
+
+const DESK_HOWSAY_PROMPT = `
+An English learner (a native Chinese speaker, level LEVEL of 5) wants to say the following in a spoken conversation. It may be Chinese, or English with mistakes. Give the most natural way to say it in everyday spoken English at their level, plus one alternative way.
+Return ONLY JSON: {"en":"the best way to say it","alt":"one alternative (empty string if none)","note":"one short tip in Traditional Chinese (empty string if none)"}
+
+What they want to say:
 `.trim();

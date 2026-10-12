@@ -253,9 +253,12 @@ class LiveSession {
   }
 
   /** Quietly tell the model about the pace the learner wants (no reply is triggered). */
-  setPace(speed) {
+  setPace(speed) { this.sendNote(PACE_NOTES[speed] || PACE_NOTES[0]); }
+
+  /** Quietly pass an instruction to the model (it is not answered). */
+  sendNote(text) {
     if (this.closed || !this.ready) return;
-    this.send({ clientContent: { turns: [{ role: "user", parts: [{ text: PACE_NOTES[speed] || PACE_NOTES[0] }] }], turnComplete: false } });
+    this.send({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: false } });
   }
 
   /** True while the model's voice is playing (or just finished). */
