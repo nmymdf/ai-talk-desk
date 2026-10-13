@@ -15,7 +15,7 @@ function buildMine(root) {
   const list = mineTab === "todo" ? todo : done;
   if (all.length) root.appendChild(h("div", { class: "exports" },
     h("button", { class: "pill", id: "expcsv", text: "匯出 CSV", on: { click: () => exportMine("csv") } }),
-    h("button", { class: "pill", id: "expjson", text: "匯出 JSON", on: { click: () => exportMine("json") } })));
+    h("button", { class: "pill", id: "expjson", title: "給「單字本」App 匯入用", text: "匯出給單字本（JSON）", on: { click: () => exportMine("json") } })));
   if (!list.length) {
     root.appendChild(card(null, h("div", { class: "sub", style: "padding:14px 4px;line-height:1.8;white-space:pre-line", text: mineTab === "todo"
       ? "這裡只放你自己存的句子和單字。\n對話中，用滑鼠反白任何一句或一個字，旁邊會跳出「＋ 存入複習」。\n存進來的內容系統不會自動摘要；例句和解釋要按「查例句與解釋」才會產生。" : "還沒有標記為「已學會」的項目。" })));
@@ -74,11 +74,21 @@ function exportMine(kind) {
   const all = Saved.all().slice().reverse();
   const d = new Date(), pad = (n) => String(n).padStart(2, "0");
   const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
-  const name = "ai-talk-desk-review-v" + VERSION + "-" + stamp + "." + kind;
+  const name = (kind === "json" ? "ai-talk-desk-danciben-v" : "ai-talk-desk-review-v") + VERSION + "-" + stamp + "." + kind;
   let blob;
   if (kind === "json") {
-    const rows = all.map(x => ({ text: x.text, meaning: (x.info && x.info.zh) || "", examples: (x.info && x.info.examples) || [], usage: (x.info && x.info.use) || "", note: x.note || "", saved_at: new Date(x.ts).toISOString(), learned: !!x.done, said_by: x.who === "me" ? "me" : "partner", topic: x.topic || "" }));
-    blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
+    // same shape as the 單字本 app's own 匯出 JSON, so 「匯出 / 匯入 JSON」 over there takes it as is
+    const rows = all.map(x => {
+      const f = x.info || {}, t = x.text.trim();
+      const isWord = !/\s/.test(t) || (t.split(/\s+/).length <= 3 && !/[.?!。？！]$/.test(t));
+      const notes = [];
+      if (f.use) notes.push("用法：" + f.use);
+      if (x.note && x.note.trim()) notes.push(x.note.trim());
+      const e = { type: isWord ? "word" : "sentence", text: t, examples: (f.examples || []).map(y => ({ en: y.en, zh: y.zh || "" })), notes, tags: ["AI對話"], date: d0(x.ts), starred: true, added: x.ts, src: "new" };
+      if (isWord) e.senses = f.zh ? [{ pos: "", zh: f.zh }] : []; else e.zh = f.zh || "";
+      return e;
+    });
+    blob = new Blob([JSON.stringify({ app: "danciben", version: 1, exported: d.toISOString(), source: "ai-talk-desk v" + VERSION, entries: rows }, null, 2)], { type: "application/json" });
   } else {
     const q = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
     const head = ["單字或句子", "中文意思", "例句1", "例句1中文", "例句2", "例句2中文", "用法說明", "我的備註", "存入日期", "已學會", "誰說的", "主題"];

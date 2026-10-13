@@ -1,7 +1,7 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "2.1";
+const VERSION = "2.2";
 const REFRESH_MS = window.__REFRESH_MS || 300000; // open a fresh connection every ~5 min (sessions went silent after ~7 min)
 const WAITS = [1000, 1800, 2800, 600];
 const WAIT_NAMES = ["一般", "長一點（建議）", "很長", "很快（回得快，但容易被搶話）"];
