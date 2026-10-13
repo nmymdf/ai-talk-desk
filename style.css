@@ -196,7 +196,13 @@ pre.log { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: 
 
 .fix .acts { margin-top: 8px; display: flex; gap: 8px; }
 .fix .acts .pill { height: 30px; font-size: 13px; padding: 0 14px; }
-#starterbtn { margin-bottom: 10px; }
+.revit .better { color: var(--text); font-size: 15.5px; font-weight: 500; user-select: text; }
+.info { margin: 8px 0 4px; padding: 10px 12px; border-left: 3px solid var(--gold, #D4AF37); background: rgba(212,175,55,.06); border-radius: 6px; font-size: 14px; line-height: 1.6; }
+.info .ex { margin-top: 6px; }
+.info .ex b { font-weight: 500; user-select: text; }
+.info .ex span { color: var(--sub); display: block; font-size: 13px; }
+.info .use { margin-top: 8px; color: var(--sub); font-size: 13.5px; }
+.exports { display: flex; gap: 8px; margin: 0 0 12px; }
 
 /* ---- v1.8: warm-up card, fluency report, monologue */
 .warmitem .row { align-items: center; gap: 8px; }

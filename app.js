@@ -1,7 +1,7 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "2.0";
+const VERSION = "2.1";
 const REFRESH_MS = window.__REFRESH_MS || 300000; // open a fresh connection every ~5 min (sessions went silent after ~7 min)
 const WAITS = [1000, 1800, 2800, 600];
 const WAIT_NAMES = ["一般", "長一點（建議）", "很長", "很快（回得快，但容易被搶話）"];
@@ -101,8 +101,10 @@ const Saved = {
   put(l) { try { localStorage.setItem("desk_saved", JSON.stringify(l.slice(0, 500))); } catch (e) {} },
   add(it) {
     const l = this.all(), k = it.text.trim().toLowerCase();
-    if (l.some(x => x.text.trim().toLowerCase() === k)) return false;
-    l.unshift(Object.assign({ id: Date.now() + "-" + Math.random().toString(36).slice(2, 6), note: "", done: false }, it)); this.put(l); return true;
+    const old = l.find(x => x.text.trim().toLowerCase() === k);
+    if (old) { this.lastId = old.id; return false; }
+    const n = Object.assign({ id: Date.now() + "-" + Math.random().toString(36).slice(2, 6), note: "", done: false }, it);
+    l.unshift(n); this.put(l); this.lastId = n.id; return true;
   },
   update(id, patch) { const l = this.all(), x = l.find(y => y.id === id); if (x) { Object.assign(x, patch); this.put(l); } },
   remove(id) { this.put(this.all().filter(x => x.id !== id)); },
@@ -137,11 +139,6 @@ const Errs = {
   setDone(id, v) { const l = this.all(); const r = l.find(x => x.id === id); if (r) { r.done = v; this.put(l); } },
   remove(id) { this.put(this.all().filter(x => x.id !== id)); },
   clear() { try { localStorage.removeItem("desk_errors"); } catch (e) {} }
-};
-
-const Phrases = {
-  all() { try { return JSON.parse(localStorage.getItem("desk_phrases") || "[]"); } catch (e) { return []; } },
-  add(p) { try { const l = this.all(); l.unshift(p); localStorage.setItem("desk_phrases", JSON.stringify(l)); } catch (e) {} }
 };
 
 const Diag = {
@@ -363,7 +360,7 @@ async function beginTalk() {
   let warm = [];
   if (P.warm) { const w = await showWarmup(topic, P.level); if (w === null) return; warm = w; }
   D = { warm, meter: new SpeechMeter(), persona, topic, level: P.level, manual: P.manual, t0: Date.now(), startMs: Date.now(), msgs: [], muted: false, live: null, stream: null,
-    ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "", simple: false, paused: false, pausedAt: 0, pausedMs: 0, resuming: false, pre: null, wantTalk: false, everReady: false, lastActMs: Date.now(), help: { starters: null, loading: false, q: [], qLoading: false, err: "", draft: "" } };
+    ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "", simple: false, paused: false, pausedAt: 0, pausedMs: 0, resuming: false, pre: null, wantTalk: false, everReady: false, lastActMs: Date.now(), revIds: [] };
   msgEls = new Map();
   logLine("對話開始 " + persona.name + " / " + topic.label + " / 難度 " + P.level + (P.manual ? " / 手動結束發言" : ""));
   buildTalk();
@@ -659,45 +656,6 @@ function toggleSimple() {
   paintBar();
 }
 
-// ---- "幫我說": starters when stuck, and "how do I say this"
-
-function openHelp() {
-  if (!D) return;
-  D.tab = "help"; paintPanel();
-  if (!D.help.starters && !D.help.loading) fetchStarters();
-}
-
-async function fetchStarters() {
-  const d = D, hp = d.help;
-  hp.loading = true; hp.err = ""; paintPanel();
-  const recent = d.msgs.filter(m => m.text.trim()).slice(-8).map(m => (m.who === "me" ? "Learner: " : "You: ") + m.text.trim()).join("\n") || "(the conversation has not started yet)";
-  const prompt = DESK_STARTERS_PROMPT.replace(/LEVEL/g, String(d.level)).replace("TOPIC", d.topic.label) + "\n" + recent;
-  try {
-    const o = parseJson(await geminiGenerate(P.key, MODELS, prompt, true));
-    hp.starters = (Array.isArray(o.starters) ? o.starters : []).filter(x => x && x.en).slice(0, 3).map(x => ({ en: String(x.en).trim(), zh: String(x.zh || "").trim() }));
-    if (!hp.starters.length) hp.err = "這次沒有想到好句子，再按一次試試。";
-  } catch (e) { hp.err = "取得建議失敗：" + (((e && e.message) || String(e)).slice(0, 120)); }
-  hp.loading = false;
-  if (D === d && d.tab === "help") paintPanel();
-}
-
-async function askHowSay(text) {
-  const d = D, hp = d.help;
-  text = String(text || "").trim();
-  if (!text || hp.qLoading) return;
-  hp.qLoading = true; hp.err = ""; paintPanel();
-  try {
-    const o = parseJson(await geminiGenerate(P.key, MODELS, DESK_HOWSAY_PROMPT.replace(/LEVEL/g, String(d.level)) + "\n" + text, true));
-    const en = String(o.en || "").trim();
-    if (!en) throw new Error("沒有得到結果");
-    const item = { src: text, en, alt: String(o.alt || "").trim(), note: String(o.note || "").trim() };
-    hp.q.unshift(item); hp.draft = "";
-    Phrases.add({ id: String(Date.now()), ts: Date.now(), src: item.src, en: item.en, alt: item.alt, topic: d.topic.label });
-  } catch (e) { hp.err = "查詢失敗：" + (((e && e.message) || String(e)).slice(0, 120)); }
-  hp.qLoading = false;
-  if (D === d && d.tab === "help") paintPanel();
-}
-
 function buildTalk() {
   const root = $("talk");
   root.classList.remove("hidden");
@@ -756,7 +714,6 @@ function paintBar() {
   }
   if (!D.ended) {
     kids.push(
-      h("button", { class: "pill gold", id: "stuckbtn", text: "我卡住了", on: { click: (e) => { e.currentTarget.blur(); openHelp(); } } }),
       h("button", { class: "pill" + (D.simple ? " on" : ""), id: "simplebtn", text: "說簡單一點", on: { click: (e) => { e.currentTarget.blur(); toggleSimple(); } } }),
       h("button", { class: "pill" + (D.manual ? " on" : ""), id: "manualbtn", text: D.manual ? "手動：開" : "手動：關", title: "切換自動／手動說話", on: { click: (e) => { e.currentTarget.blur(); switchManual(); } } }),
       h("button", { class: "pill mute" + (D.muted ? " on" : ""), text: D.muted ? "取消靜音" : "靜音", on: { click: (e) => { e.currentTarget.blur(); D.muted = !D.muted; logLine(D.muted ? "靜音" : "取消靜音"); paintBar(); } } }),
@@ -801,12 +758,16 @@ function waveLoop(mine) {
       }
     }
     W.el.classList.toggle("on", active || shown);
-    if (!mine.hist) mine.hist = new Array(24).fill(0);
-    if (now - (mine.histAt || 0) >= 55) { mine.hist.push(Math.min(1, Math.sqrt(lvl * 5))); mine.hist.shift(); mine.histAt = now; }
+    // slow, smooth wave: one new bar every 160 ms, rises quickly but falls gently, and the bars glide to the left
+    const STEP = 160, N = 16;
+    if (!mine.hist) { mine.hist = new Array(N + 1).fill(0); mine.histAt = now; mine.sm = 0; }
+    const target = Math.min(1, Math.sqrt(lvl * 5));
+    mine.sm = target > mine.sm ? mine.sm + (target - mine.sm) * 0.35 : mine.sm * 0.97;
+    while (now - mine.histAt >= STEP) { mine.hist.push(mine.sm); mine.hist.shift(); mine.histAt += STEP; if (now - mine.histAt > 1000) mine.histAt = now; }
     if (active || shown) {
-      const c = W.canvas.getContext("2d"), w = W.canvas.width, hh = W.canvas.height, n = mine.hist.length, bw = w / n;
+      const c = W.canvas.getContext("2d"), w = W.canvas.width, hh = W.canvas.height, bw = w / N, frac = (now - mine.histAt) / STEP;
       c.clearRect(0, 0, w, hh); c.fillStyle = mine.muted ? "#4A5678" : "#D4AF37";
-      for (let i = 0; i < n; i++) { const bh = Math.max(3, mine.hist[i] * hh); c.fillRect(i * bw + 1, (hh - bh) / 2, bw - 2, bh); }
+      for (let i = 0; i <= N; i++) { const bh = Math.max(3, mine.hist[i] * hh); c.fillRect(i * bw - frac * bw + 1, (hh - bh) / 2, bw - 3, bh); }
     }
   }
   requestAnimationFrame(() => waveLoop(mine));
@@ -951,7 +912,7 @@ function paintPanel() {
   tabs.replaceChildren(
     h("button", { class: D.tab === "fix" ? "on" : "", text: "更正", on: { click: () => { D.tab = "fix"; paintPanel(); } } }),
     h("button", { class: D.tab === "sum" ? "on" : "", text: "本次摘要", on: { click: () => { D.tab = "sum"; paintPanel(); } } }),
-    h("button", { class: D.tab === "help" ? "on" : "", text: "幫我說", on: { click: () => { D.tab = "help"; paintPanel(); } } }));
+    h("button", { class: D.tab === "rev" ? "on" : "", id: "revtab", text: "這次的複習" + (D.revIds.length ? " " + D.revIds.length : ""), on: { click: () => { D.tab = "rev"; paintPanel(); } } }));
   const a = D.analysis;
   if (D.tab === "fix") {
     if (!D.ended) body.replaceChildren(h("div", { class: "empty", style: "white-space:pre-line;margin-top:40px", text: "放心說，說錯也沒關係。\n對話中不會打斷你，\n結束後這裡會列出幾個值得注意的地方。" }));
@@ -967,23 +928,16 @@ function paintPanel() {
       } else kids.push(h("div", { class: "sub", style: "line-height:1.6", text: "這次沒有需要特別提醒的地方，說得很好！" }));
       body.replaceChildren(...kids);
     }
-  } else if (D.tab === "help") {
-    const hp = D.help, kids = [];
-    kids.push(h("div", { class: "ptitle", text: "不知道怎麼接？" }),
-      h("button", { class: "pill gold", id: "starterbtn", text: hp.loading ? "想一下…" : (hp.starters ? "再給我幾個" : "給我開頭句"), on: { click: () => { if (!hp.loading) fetchStarters(); } } }));
-    if (hp.starters) hp.starters.forEach(s => kids.push(h("div", { class: "fix starter" }, h("div", { class: "better", text: s.en }), s.zh ? h("div", { class: "why", text: s.zh }) : null,
-      h("div", { class: "acts" }, h("button", { class: "pill", text: "複製", on: { click: () => copyText(s.en) } })))));
-    const inp = h("input", { class: "field", id: "howsay", type: "text", placeholder: "輸入中文，或你想說的句子", on: {
-      input: () => { hp.draft = inp.value; },
-      keydown: (e) => { if (e.key === "Enter") { e.preventDefault(); askHowSay(inp.value); } } } });
-    inp.value = hp.draft || "";
-    kids.push(h("div", { class: "ptitle", style: "margin-top:18px", text: "這句英文怎麼說？" }),
-      h("div", { class: "row" }, h("div", { class: "grow" }, inp), h("button", { class: "pill gold", id: "howsaybtn", text: hp.qLoading ? "查詢中…" : "查", on: { click: () => askHowSay(inp.value) } })));
-    if (hp.err) kids.push(h("div", { class: "sub", style: "color:#FF9C9C;margin-top:10px", text: hp.err }));
-    hp.q.forEach(x => kids.push(h("div", { class: "fix howsay" }, h("div", { class: "why", style: "margin:0 0 4px", text: x.src }), h("div", { class: "better", text: x.en }),
-      x.alt ? h("div", { class: "why", text: "也可以說：" + x.alt }) : null, x.note ? h("div", { class: "why", text: x.note }) : null,
-      h("div", { class: "acts" }, h("button", { class: "pill", text: "複製", on: { click: () => copyText(x.en) } })))));
-    if (hp.q.length) kids.push(h("div", { class: "sub", style: "font-size:12.5px;margin-top:6px", text: "查過的句子會自動存起來，之後可以拿來複習。" }));
+  } else if (D.tab === "rev") {
+    const all = Saved.all(), kids = [];
+    const list = D.revIds.map(id => all.find(x => x.id === id)).filter(Boolean);
+    kids.push(h("div", { class: "ptitle", text: "這次存的句子和單字" }));
+    if (!list.length) kids.push(h("div", { class: "empty", style: "white-space:pre-line;margin-top:30px;line-height:1.7", text: "對話中用滑鼠反白一句話或一個字，\n按「＋ 存入複習」，這裡就會出現。\n離開對話後這裡會清空，\n存好的都在「複習 → 我的複習區」。" }));
+    list.forEach(x => kids.push(h("div", { class: "fix revit" }, h("div", { class: "better", text: x.text }),
+      h("div", { class: "acts" },
+        h("button", { class: "pill", text: "🔊 聽", on: { click: () => speakEn(x.text) } }),
+        h("button", { class: "pill", text: "刪除", on: { click: () => { Saved.remove(x.id); D.revIds = D.revIds.filter(y => y !== x.id); paintPanel(); } } })))));
+    if (list.length) kids.push(h("div", { class: "sub", style: "font-size:12.5px;margin-top:8px;line-height:1.6", text: "備註、例句和解釋，到「複習 → 我的複習區」再處理。" }));
     body.replaceChildren(...kids);
   } else {
     const secs = activeSec(D, D.ended ? D.endMs : 0);
@@ -1022,7 +976,9 @@ document.addEventListener("mouseup", (e) => {
       mousedown: (ev) => ev.preventDefault(),
       click: () => {
         const added = Saved.add({ ts: Date.now(), text, who, topic: d.topic.label, persona: d.persona.name });
+        if (Saved.lastId && !d.revIds.includes(Saved.lastId)) d.revIds.push(Saved.lastId);
         toast(added ? "已存入「我的複習區」" : "這個已經存過了");
+        if (D === d) paintPanel();
         try { window.getSelection().removeAllRanges(); } catch (err) {}
         hideSaveBtn();
       } } });

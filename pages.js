@@ -13,9 +13,12 @@ function buildMine(root) {
   const tabBtn = (id, t) => h("button", { class: "pill" + (mineTab === id ? " on" : ""), text: t, on: { click: () => { mineTab = id; go("review"); } } });
   root.appendChild(h("div", { class: "tabs" }, tabBtn("todo", "待複習 " + todo.length), tabBtn("done", "已學會 " + done.length)));
   const list = mineTab === "todo" ? todo : done;
+  if (all.length) root.appendChild(h("div", { class: "exports" },
+    h("button", { class: "pill", id: "expcsv", text: "匯出 CSV", on: { click: () => exportMine("csv") } }),
+    h("button", { class: "pill", id: "expjson", text: "匯出 JSON", on: { click: () => exportMine("json") } })));
   if (!list.length) {
     root.appendChild(card(null, h("div", { class: "sub", style: "padding:14px 4px;line-height:1.8;white-space:pre-line", text: mineTab === "todo"
-      ? "這裡只放你自己存的句子和單字。\n對話中，用滑鼠反白任何一句或一個字，旁邊會跳出「＋ 存入複習」。\n存進來的內容系統不會改動、也不會摘要，備註由你自己寫。" : "還沒有標記為「已學會」的項目。" })));
+      ? "這裡只放你自己存的句子和單字。\n對話中，用滑鼠反白任何一句或一個字，旁邊會跳出「＋ 存入複習」。\n存進來的內容系統不會自動摘要；例句和解釋要按「查例句與解釋」才會產生。" : "還沒有標記為「已學會」的項目。" })));
     return;
   }
   list.forEach(x => {
@@ -24,8 +27,9 @@ function buildMine(root) {
     noteIn.addEventListener("input", () => Saved.update(x.id, { note: noteIn.value }));
     root.appendChild(h("div", { class: "err mine" },
       h("div", { class: "meta", text: fmtDate(x.ts) + "　" + (x.who === "me" ? "我說的" : "對方說的") + "　" + (x.persona || "") + (x.topic ? " · " + x.topic : "") }),
-      h("div", { class: "better mytext", text: x.text }), noteIn,
+      h("div", { class: "better mytext", text: x.text }), infoBlock(x), noteIn,
       h("div", { class: "acts" },
+        h("button", { class: "pill gold lookbtn", text: x.info ? "重查" : "查例句與解釋", on: { click: (e) => lookupSaved(x, e.currentTarget) } }),
         h("button", { class: "pill", text: x.done ? "移回待複習" : "✓ 已學會", on: { click: () => { Saved.update(x.id, { done: !x.done }); go("review"); } } }),
         h("button", { class: "pill", text: "🔊 聽", on: { click: () => speakEn(x.text) } }),
         h("button", { class: "pill", text: "複製", on: { click: () => copyText(x.text + (noteIn.value ? "\n" + noteIn.value : "")) } }),
@@ -37,6 +41,60 @@ function buildMine(root) {
       modal("清除我的複習區？", h("div", { class: "sub", text: "你存的所有句子和備註都會刪除，無法復原。" }), [{ text: "取消" }, { text: "清除", primary: true, onClick: () => { Saved.clear(); go("review"); } }]) } })));
 }
 let mineTab = "todo";
+
+function infoBlock(x) {
+  const f = x.info; if (!f) return null;
+  return h("div", { class: "info" },
+    f.zh ? h("div", { text: f.zh }) : null,
+    (f.examples || []).map(e => h("div", { class: "ex" }, h("b", { text: e.en }), e.zh ? h("span", { text: e.zh }) : null)),
+    f.use ? h("div", { class: "use", text: f.use }) : null);
+}
+
+let lookingUp = false;
+/** Only when the learner taps 「查例句與解釋」: ask Gemini once and keep the answer with the saved item. */
+async function lookupSaved(x, btn) {
+  if (lookingUp) return;
+  lookingUp = true; btn.textContent = "查詢中…";
+  try {
+    const o = parseJson(await geminiGenerate(P.key, MODELS, DESK_LOOKUP_PROMPT.replace(/LEVEL/g, String(P.level)) + "\n" + x.text, true));
+    const ex = (Array.isArray(o.examples) ? o.examples : []).filter(e => e && e.en).slice(0, 3).map(e => ({ en: String(e.en).trim(), zh: String(e.zh || "").trim() }));
+    const info = { zh: String(o.zh || "").trim(), examples: ex, use: String(o.use || "").trim(), at: Date.now() };
+    if (!info.zh && !ex.length) throw new Error("沒有得到結果");
+    Saved.update(x.id, { info });
+    lookingUp = false;
+    if (page === "review" && reviewSec === "mine") go("review");
+  } catch (e) {
+    lookingUp = false;
+    btn.textContent = "失敗，再試一次";
+    toast("查詢失敗：" + (((e && e.message) || String(e)).slice(0, 100)));
+  }
+}
+
+function exportMine(kind) {
+  const all = Saved.all().slice().reverse();
+  const d = new Date(), pad = (n) => String(n).padStart(2, "0");
+  const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
+  const name = "ai-talk-desk-review-v" + VERSION + "-" + stamp + "." + kind;
+  let blob;
+  if (kind === "json") {
+    const rows = all.map(x => ({ text: x.text, meaning: (x.info && x.info.zh) || "", examples: (x.info && x.info.examples) || [], usage: (x.info && x.info.use) || "", note: x.note || "", saved_at: new Date(x.ts).toISOString(), learned: !!x.done, said_by: x.who === "me" ? "me" : "partner", topic: x.topic || "" }));
+    blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
+  } else {
+    const q = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+    const head = ["單字或句子", "中文意思", "例句1", "例句1中文", "例句2", "例句2中文", "用法說明", "我的備註", "存入日期", "已學會", "誰說的", "主題"];
+    const lines = [head.map(q).join(",")];
+    all.forEach(x => {
+      const f = x.info || {}, e = f.examples || [];
+      lines.push([x.text, f.zh, e[0] && e[0].en, e[0] && e[0].zh, e[1] && e[1].en, e[1] && e[1].zh, f.use, x.note, d0(x.ts), x.done ? "是" : "否", x.who === "me" ? "我" : "對方", x.topic].map(q).join(","));
+    });
+    blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  }
+  const a = h("a", { href: URL.createObjectURL(blob), download: name });
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  toast("已匯出 " + name);
+}
+function d0(ts) { const d = new Date(ts), p = (n) => String(n).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); }
 
 function buildReview(root) {
   root.appendChild(h("div", { class: "pagehead" }, h("h1", { text: "複習" }), h("span", { class: "sub", text: reviewSec === "mine" ? "你自己反白存下來的句子和單字" : "每次對話結束後，系統挑出的重點" })));

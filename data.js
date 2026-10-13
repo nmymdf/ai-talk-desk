@@ -508,20 +508,15 @@ const SIMPLER_NOTES = [
   "(Note to the speaker: the learner finds your English too hard. From now on use simpler everyday words and short sentences, no slang and no idioms, and speak a little slower. Keep doing so and do not mention this note.)"
 ];
 
-const DESK_STARTERS_PROMPT = `
-You help an English learner (a native Chinese speaker) who is stuck in the middle of a spoken conversation and does not know what to say next.
-Give exactly 3 different, natural things the learner could say next, each replying to the partner's last line. Each is ONE spoken sentence at the learner's level (LEVEL of 5): at most 12 words for levels 1-2, 16 words for level 3, 22 words for levels 4-5. Make the three clearly different (for example: answer directly, add a detail, ask a question back).
-Return ONLY JSON: {"starters":[{"en":"the English sentence","zh":"its meaning in Traditional Chinese"}]}
+const DESK_LOOKUP_PROMPT = `
+An English learner (a native Chinese speaker, level LEVEL of 5, where 1 is beginner and 5 is advanced) saved the following word or sentence from a spoken conversation to review later. Explain it for them.
+Return ONLY a JSON object:
+{"zh":"the meaning in Traditional Chinese (Taiwan); for a sentence, a natural translation; for a word, its common meanings with the part of speech",
+ "examples":[{"en":"a short natural everyday example sentence using it","zh":"its Traditional Chinese translation"}],
+ "use":"one or two short sentences in Traditional Chinese on how it is used: common collocations, tone, or a typical mistake (empty string if nothing useful)"}
+Give exactly 2 examples. Keep them simple, matched to the learner's level, no rare slang. If the text is a whole sentence, the examples should show the key phrase or pattern in it, in new sentences.
 
-Topic: TOPIC
-Recent conversation ("You" is the partner, "Learner" is the learner):
-`.trim();
-
-const DESK_HOWSAY_PROMPT = `
-An English learner (a native Chinese speaker, level LEVEL of 5) wants to say the following in a spoken conversation. It may be Chinese, or English with mistakes. Give the most natural way to say it in everyday spoken English at their level, plus one alternative way.
-Return ONLY JSON: {"en":"the best way to say it","alt":"one alternative (empty string if none)","note":"one short tip in Traditional Chinese (empty string if none)"}
-
-What they want to say:
+The saved text:
 `.trim();
 
 
