@@ -1,13 +1,16 @@
 /* AI 英文對話（桌機版）— core: helpers, storage, start page, conversation screen. */
 "use strict";
 
-const VERSION = "1.9";
+const VERSION = "2.0";
 const REFRESH_MS = window.__REFRESH_MS || 300000; // open a fresh connection every ~5 min (sessions went silent after ~7 min)
 const WAITS = [1000, 1800, 2800, 600];
 const WAIT_NAMES = ["一般", "長一點（建議）", "很長", "很快（回得快，但容易被搶話）"];
 const FIX_KEYS = ["none", "recast", "brief"];
 const FIX_NAMES = ["不糾正（結束後才給重點）", "自然複述（順口說出正確的版本）", "簡短指正（每次一句提醒）"];
 const SPEED_NAMES = ["正常", "慢", "更慢"];
+const FAST_MODELS = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash"];
+const PAUSE_MS = () => window.__PAUSE_MS || 120000;      // this long without any voice or text: pause the connection
+const PAUSE_END_MS = () => window.__PAUSE_END_MS || 1800000; // paused this long: really end the conversation
 const MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.5-flash"];
 
 // ================================================================ helpers
@@ -93,6 +96,19 @@ let P = Object.assign({}, DEFAULTS);
 try { Object.assign(P, JSON.parse(localStorage.getItem("desk_prefs") || "{}")); } catch (e) {}
 function savePrefs() { try { localStorage.setItem("desk_prefs", JSON.stringify(P)); } catch (e) {} }
 
+const Saved = {
+  all() { try { return JSON.parse(localStorage.getItem("desk_saved") || "[]"); } catch (e) { return []; } },
+  put(l) { try { localStorage.setItem("desk_saved", JSON.stringify(l.slice(0, 500))); } catch (e) {} },
+  add(it) {
+    const l = this.all(), k = it.text.trim().toLowerCase();
+    if (l.some(x => x.text.trim().toLowerCase() === k)) return false;
+    l.unshift(Object.assign({ id: Date.now() + "-" + Math.random().toString(36).slice(2, 6), note: "", done: false }, it)); this.put(l); return true;
+  },
+  update(id, patch) { const l = this.all(), x = l.find(y => y.id === id); if (x) { Object.assign(x, patch); this.put(l); } },
+  remove(id) { this.put(this.all().filter(x => x.id !== id)); },
+  clear() { try { localStorage.removeItem("desk_saved"); } catch (e) {} }
+};
+
 const Calls = {
   all() { try { return JSON.parse(localStorage.getItem("desk_calls") || "[]"); } catch (e) { return []; } },
   put(l) { try { localStorage.setItem("desk_calls", JSON.stringify(l.slice(0, 50))); } catch (e) {} },
@@ -171,7 +187,7 @@ function go(name) {
 }
 
 function renderSide() {
-  const items = [["start", "💬", "開始對話"], ["mono", "🎙", "一分鐘獨白"], ["review", "📒", "錯誤複習"], ["stats", "📈", "統計"], ["system", "⚙", "系統"]];
+  const items = [["start", "💬", "開始對話"], ["mono", "🎙", "一分鐘獨白"], ["review", "📒", "複習"], ["stats", "📈", "統計"], ["system", "⚙", "系統"]];
   $("side").replaceChildren(
     h("div", { class: "brand" }, h("img", { src: "img/logo.jpg", alt: "" }), h("div", {}, h("b", { text: "AI 英文對話" }), h("span", { text: "作者：ArchieKuo" }))),
     ...items.map(([id, ic, t]) => h("button", { class: "nav" + (page === id ? " on" : ""), on: { click: () => go(id) } }, h("span", { text: ic }), h("span", { text: t }))),
@@ -347,13 +363,14 @@ async function beginTalk() {
   let warm = [];
   if (P.warm) { const w = await showWarmup(topic, P.level); if (w === null) return; warm = w; }
   D = { warm, meter: new SpeechMeter(), persona, topic, level: P.level, manual: P.manual, t0: Date.now(), startMs: Date.now(), msgs: [], muted: false, live: null, stream: null,
-    ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "", simple: false, help: { starters: null, loading: false, q: [], qLoading: false, err: "", draft: "" } };
+    ended: false, failed: false, log: [], timer: null, tab: "fix", analysis: null, err: "", endMs: 0, retries: 0, nudges: 0, sessionMs: Date.now(), lastSrvMs: Date.now(), lastTextMs: Date.now(), stuck: false, note: "", simple: false, paused: false, pausedAt: 0, pausedMs: 0, resuming: false, pre: null, wantTalk: false, everReady: false, lastActMs: Date.now(), help: { starters: null, loading: false, q: [], qLoading: false, err: "", draft: "" } };
   msgEls = new Map();
   logLine("對話開始 " + persona.name + " / " + topic.label + " / 難度 " + P.level + (P.manual ? " / 手動結束發言" : ""));
   buildTalk();
   keepAwake(true);
   D.timer = setInterval(tick, 300);
   const mine = D;
+  requestAnimationFrame(() => waveLoop(mine));
 
   try {
     D.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
@@ -387,6 +404,19 @@ function startLive(recover) {
     onModelChosen: (m) => { P.liveModel = m; savePrefs(); },
     onLog: (m) => { if (D === mine) logLine(m); },
     onServer: () => { mine.lastSrvMs = Date.now(); },
+    onReady: () => {
+      if (D !== mine || mine.live !== L) return;
+      mine.everReady = true;
+      if (mine.pre) {
+        const r = mine.pre.stop(true); mine.pre = null;
+        if (mine.manual && P.hold) { /* hold-to-talk: the learner presses again after it is connected */ }
+        else { if (mine.manual && mine.wantTalk) L.startTalk(); L.sendChunks(r.chunks); }
+      }
+      mine.wantTalk = false;
+      mine.lastActMs = Date.now();
+      if (mine.note === "連線中…請稍候，連好就能說") setNote("");
+      paintBar();
+    },
     onModelText: (t) => {
       if (D !== mine || mine.live !== L) return;
       if (t === "\u0000") { const m = lastMsg(); if (m && m.who === "ai") m.closed = true; paintMsgs(); return; }
@@ -415,6 +445,45 @@ function reconnectTalk(auto, mode) {
   setNote(mode === "refresh" ? "已自動更新連線，可以繼續說" : auto ? "連線中斷，正在重新連線…" : "正在重新連線…");
   setTimeout(() => { if (D && !D.ended) { startLive(mode); setTimeout(() => { if (D && !D.ended && D.live && D.live.ready) setNote(""); }, mode === "refresh" ? 2500 : 3500); } }, 700);
   paintBar();
+}
+
+/** Nobody has said anything for a while: close the connection and the microphone to save quota; the learner presses a button to continue. */
+function pauseTalk() {
+  if (!D || D.ended || D.paused) return;
+  const old = D.live; D.live = null;
+  try { old && old.close(); } catch (e) {}
+  const m = lastMsg(); if (m) m.closed = true;
+  holdDown = false;
+  stopStream(D);
+  D.paused = true; D.pausedAt = Date.now(); D.stuck = false; D.note = "";
+  logLine("超過 " + Math.round(PAUSE_MS() / 1000) + " 秒沒有聲音，暫停連線並關閉麥克風");
+  paintHeader(); paintBar(); paintMsgs();
+}
+
+async function resumeTalk() {
+  if (!D || D.ended || !D.paused || D.resuming) return;
+  const mine = D;
+  mine.resuming = true; paintBar();
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }); }
+  catch (e) { mine.resuming = false; toast("沒有麥克風權限，或麥克風被佔用"); paintBar(); return; }
+  if (D !== mine || mine.ended) { stream.getTracks().forEach(t => t.stop()); return; }
+  mine.stream = stream;
+  mine.pausedMs += Date.now() - mine.pausedAt;
+  mine.paused = false; mine.resuming = false;
+  mine.lastTextMs = Date.now(); mine.lastActMs = Date.now(); mine.retries = 0;
+  mine.wantTalk = true;
+  try { mine.pre = new MonoRecorder(stream, ensureAC()); await mine.pre.start(); } catch (e) { mine.pre = null; }
+  logLine("使用者按繼續，重新連線");
+  setNote("連線中…請稍候，連好就能說");
+  startLive("refresh");
+  paintHeader(); paintBar();
+}
+
+/** Seconds of conversation, not counting the time it was paused. */
+function activeSec(d, atMs) {
+  const t = atMs || Date.now();
+  return Math.max(0, (t - d.startMs - d.pausedMs - (d.paused ? t - d.pausedAt : 0)) / 1000);
 }
 
 function setNote(s) { if (!D) return; D.note = s; paintHeader(); }
@@ -459,7 +528,8 @@ function endTalk() {
   try { d.live && d.live.close(); } catch (e) {}
   stopStream(d);
   keepAwake(false);
-  const dur = Math.round((d.endMs - d.startMs) / 1000);
+  if (d.paused) { d.pausedMs += d.endMs - d.pausedAt; d.paused = false; }
+  const dur = Math.round((d.endMs - d.startMs - d.pausedMs) / 1000);
   const text = d.msgs.filter(m => m.text.trim()).map(m => (m.who === "me" ? "You: " : "Partner: ") + m.text.trim()).join("\n");
   const myMsgs = d.msgs.filter(m => m.who === "me" && m.text.trim());
   const myWords = myMsgs.reduce((n, m) => n + m.text.trim().split(/\s+/).filter(Boolean).length, 0);
@@ -472,7 +542,7 @@ function endTalk() {
     }
   } catch (e) {}
   try {
-    if (dur >= 10 && d.live && d.live.ready) Stats.add(dur, d.startMs, d.persona.name, d.topic.label, d.level);
+    if (dur >= 10 && ((d.live && d.live.ready) || d.everReady)) Stats.add(dur, d.startMs, d.persona.name, d.topic.label, d.level);
     Diag.addLog({ ts: d.startMs, persona: d.persona.name, topic: d.topic.label, lines: d.log.slice(-150) });
   } catch (e) {}
   const rec = { ts: d.startMs, durationSec: dur, persona: d.persona.name, topic: d.topic.label, level: d.level, transcript: text, feedback: "", fluency: d.fluency || null };
@@ -573,6 +643,7 @@ window.addEventListener("blur", releaseTalk);
 
 /** Switch between automatic and button turn-taking in the middle of the conversation. */
 function switchManual() {
+  if (D && !D.ended && D.paused) { D.manual = !D.manual; logLine("切換成" + (D.manual ? "手動" : "自動") + "模式（暫停中）"); paintBar(); return; }
   if (!D || D.ended || !D.live || !D.live.ready) { toast("連線完成後才能切換"); return; }
   D.manual = !D.manual;
   logLine("切換成" + (D.manual ? "手動" : "自動") + "模式");
@@ -644,7 +715,7 @@ function paintHeader() {
     h("img", { src: D.persona.photo, alt: "" }),
     h("div", { class: "who" }, h("b", { text: D.persona.name }), h("span", { text: D.topic.label + "　·　難度 " + D.level })),
     h("div", { class: "grow" }),
-    h("div", { class: "timer", id: "timer", text: mmss(((D.ended ? D.endMs : Date.now()) - D.startMs) / 1000) }),
+    h("div", { class: "timer", id: "timer", text: mmss(activeSec(D, D.ended ? D.endMs : 0)) }),
     h("button", { class: "btn outline", text: "⛶ 全螢幕", on: { click: toggleFullscreen } }),
     D.ended
       ? h("button", { class: "btn gold", text: "‹ 回到首頁", on: { click: leaveTalk } })
@@ -656,6 +727,7 @@ function paintHeader() {
 function statusText() {
   if (!D) return ["", ""];
   if (D.ended) return ["", D.failed ? "對話已中斷" : "對話已結束，可以看右邊的更正"];
+  if (D.paused) return ["", D.resuming ? "正在重新連線…" : "已暫停（為了節省用量）。按右下角的「繼續說話」，接著剛才的話題"];
   const L = D.live;
   if (!L || !L.ready) return ["", "連線中…"];
   if (!L.gotAudio && !D.msgs.length) return ["ai", "對方準備開口…"];
@@ -663,6 +735,15 @@ function statusText() {
   if (D.muted) return ["", "麥克風已靜音"];
   if (D.manual) return L.talking ? ["me", P.hold ? "正在收音…放開就送出" : "正在收音…說完請按「說完了」"] : (L.speaking() ? ["ai", "對方說話中…"] : ["", P.hold ? "輪到你：按住「按住說話」或空白鍵" : "輪到你：按「開始說話」或空白鍵"]);
   return L.speaking() ? ["ai", "對方說話中…"] : ["me", "輪到你說話了"];
+}
+
+function ensureWave() {
+  if (D.waveBox) return D.waveBox;
+  const canvas = h("canvas", { class: "wave", width: 120, height: 30 });
+  const t = h("span", { class: "wt", text: "0:00" });
+  const el = h("div", { class: "wavebox", id: "wavebox" }, canvas, t);
+  D.waveBox = { el, canvas, t };
+  return D.waveBox;
 }
 
 function paintBar() {
@@ -674,12 +755,6 @@ function paintBar() {
       h("button", { class: "pill", text: "重新連線", on: { click: (e) => { e.currentTarget.blur(); logLine("手動重新連線"); reconnectTalk(false, "drop"); } } }));
   }
   if (!D.ended) {
-    if (D.manual) {
-      const talking = !!(D.live && D.live.talking);
-      kids.push(P.hold
-        ? h("button", { class: "talkbtn" + (talking ? " on" : ""), id: "talkbtn", text: talking ? "● 放開就送出" : "🎤 按住說話", on: { pointerdown: (e) => { e.preventDefault(); pressTalk(); } } })
-        : h("button", { class: "talkbtn" + (talking ? " on" : ""), id: "talkbtn", text: talking ? "✓ 說完了" : "🎤 開始說話", on: { click: (e) => { e.currentTarget.blur(); toggleTalk(); } } }));
-    }
     kids.push(
       h("button", { class: "pill gold", id: "stuckbtn", text: "我卡住了", on: { click: (e) => { e.currentTarget.blur(); openHelp(); } } }),
       h("button", { class: "pill" + (D.simple ? " on" : ""), id: "simplebtn", text: "說簡單一點", on: { click: (e) => { e.currentTarget.blur(); toggleSimple(); } } }),
@@ -688,17 +763,65 @@ function paintBar() {
       h("div", { class: "row", style: "gap:4px" }, h("span", { class: "sub", style: "font-size:13px;margin-right:2px", text: "語速" }),
         SPEED_NAMES.map((n, i) => h("button", { class: "pill" + (P.speed === i ? " on" : ""), style: "height:34px;padding:0 12px", text: n, on: { click: (e) => {
           e.currentTarget.blur(); P.speed = i; savePrefs(); logLine("語速：" + n); if (D.live) D.live.setPace(i); paintBar(); } } }))));
+    // bottom right: the sound wave with a timer while you speak, and the talk button
+    const grp = h("div", { class: "talkgrp" });
+    if (D.paused) {
+      grp.appendChild(h("button", { class: "talkbtn", id: "talkbtn", text: D.resuming ? "連線中…" : "▶ 繼續說話", on: { click: (e) => { e.currentTarget.blur(); resumeTalk(); } } }));
+    } else {
+      grp.appendChild(ensureWave().el);
+      if (D.manual) {
+        const talking = !!(D.live && D.live.talking);
+        grp.appendChild(P.hold
+          ? h("button", { class: "talkbtn" + (talking ? " on" : ""), id: "talkbtn", text: talking ? "● 放開就送出" : "🎤 按住說話", on: { pointerdown: (e) => { e.preventDefault(); pressTalk(); } } })
+          : h("button", { class: "talkbtn" + (talking ? " on" : ""), id: "talkbtn", text: talking ? "✓ 說完了" : "🎤 開始說話", on: { click: (e) => { e.currentTarget.blur(); toggleTalk(); } } }));
+      }
+    }
+    kids.push(grp);
   }
   bar.replaceChildren(...kids);
+}
+
+/** Draws the little sound wave and the "how long have I been speaking" timer. */
+function waveLoop(mine) {
+  if (D !== mine || mine.ended) return;
+  const now = Date.now(), W = mine.waveBox;
+  if (W && W.el.isConnected && !mine.paused) {
+    const L = mine.live;
+    let active = false, shown = false, lvl = 0;
+    if (L && L.ready) {
+      lvl = (now - (L.levelAt || 0) < 300) ? (L.level || 0) : 0;
+      const echo = L.speaking() && !P.bargeIn;
+      if (mine.muted) { shown = true; lvl = 0; W.t.textContent = "靜音中"; }
+      else {
+        if (!echo && lvl > 0.02) mine.voiceAt = now;
+        active = mine.manual ? !!L.talking : (!echo && now - (mine.voiceAt || 0) < 1200);
+        if (!active) mine.spkStart = 0;
+        else { if (!mine.spkStart) mine.spkStart = now; W.t.textContent = mmss((now - mine.spkStart) / 1000).replace(/^0/, ""); }
+        if (echo) lvl = 0;
+      }
+    }
+    W.el.classList.toggle("on", active || shown);
+    if (!mine.hist) mine.hist = new Array(24).fill(0);
+    if (now - (mine.histAt || 0) >= 55) { mine.hist.push(Math.min(1, Math.sqrt(lvl * 5))); mine.hist.shift(); mine.histAt = now; }
+    if (active || shown) {
+      const c = W.canvas.getContext("2d"), w = W.canvas.width, hh = W.canvas.height, n = mine.hist.length, bw = w / n;
+      c.clearRect(0, 0, w, hh); c.fillStyle = mine.muted ? "#4A5678" : "#D4AF37";
+      for (let i = 0; i < n; i++) { const bh = Math.max(3, mine.hist[i] * hh); c.fillRect(i * bw + 1, (hh - bh) / 2, bw - 2, bh); }
+    }
+  }
+  requestAnimationFrame(() => waveLoop(mine));
 }
 
 let lastStatus = "";
 function tick() {
   if (!D) return;
-  const t = $("timer"); if (t && !D.ended) t.textContent = mmss((Date.now() - D.startMs) / 1000);
+  const t = $("timer"); if (t && !D.ended) t.textContent = mmss(activeSec(D));
+  if (!D.ended && D.paused && Date.now() - D.pausedAt > PAUSE_END_MS()) { logLine("暫停超過 " + Math.round(PAUSE_END_MS() / 60000) + " 分鐘，結束這次對話"); endTalk(); return; }
   if (!D.ended && D.live && D.live.ready) {
     const m = lastMsg(), now = Date.now();
     const quiet = !D.live.speaking() && !D.live.talking;
+    if (!quiet) D.lastActMs = now;
+    if (!D.stuck && !D.resuming && now - Math.max(D.lastTextMs, D.lastActMs) > PAUSE_MS() && now - D.sessionMs > 4000) { pauseTalk(); return; }
     const waiting = !!(m && m.who === "me" && !m.closed && quiet && now - D.lastTextMs > 9000 && now - D.lastSrvMs > 9000);
     if (waiting) {
       if (!D.stuck) { D.stuck = true; logLine("對方超過 9 秒沒有回應"); paintBar(); }
@@ -734,14 +857,18 @@ function paintMsgs() {
     if (!e) {
       const textEl = h("div", { class: "t" });
       const trEl = h("div", { class: "tr hidden" });
-      const bub = h("div", { class: "bub" }, textEl, trEl);
+      const fxEl = h("div", { class: "tr fx hidden" });
+      const bub = h("div", { class: "bub" }, textEl, trEl, fxEl);
       let el;
       if (m.who === "ai") {
-        const btn = h("button", { class: "tbtn", text: "譯", title: "翻譯這一句", on: { click: () => translateMsg(m) } });
+        const btn = h("button", { class: "tbtn", text: "翻譯", title: "翻譯這一句", on: { click: () => translateMsg(m) } });
         el = h("div", { class: "msg ai" }, h("img", { class: "av", src: D.persona.photo, alt: "" }), bub, btn);
-      } else el = h("div", { class: "msg me" }, bub);
+      } else {
+        const btn = h("button", { class: "tbtn", text: "修正", title: "看這一句更好的說法", on: { click: () => fixMsg(m) } });
+        el = h("div", { class: "msg me" }, btn, bub);
+      }
       box.appendChild(el);
-      e = { el, textEl, trEl };
+      e = { el, textEl, trEl, fxEl };
       msgEls.set(m.id, e);
     }
     e.textEl.textContent = m.text;
@@ -753,12 +880,38 @@ function paintMsgs() {
 async function translateMsg(m) {
   const e = msgEls.get(m.id); if (!e) return;
   if (m.tr) { e.trEl.classList.toggle("hidden"); return; }
-  if (!m.text.trim()) return;
+  if (!m.text.trim() || m.trBusy) return;
+  m.trBusy = true;
   e.trEl.classList.remove("hidden"); e.trEl.textContent = "翻譯中…";
   try {
-    const t = await geminiGenerate(P.key, MODELS, "Translate the following English into natural Traditional Chinese (Taiwan). Output only the translation, nothing else.\n\n" + m.text, false);
+    const t = await geminiGenerate(P.key, FAST_MODELS, "Translate the following English into natural Traditional Chinese (Taiwan). Output only the translation, nothing else.\n\n" + m.text, false, true);
     m.tr = String(t).trim(); e.trEl.textContent = m.tr;
   } catch (err) { e.trEl.textContent = "翻譯失敗：" + ((err && err.message) || err).toString().slice(0, 120); }
+  m.trBusy = false;
+}
+
+/** One tap on 「修正」 asks for a better way to say this one sentence (nothing is checked until the learner asks). */
+async function fixMsg(m) {
+  const e = msgEls.get(m.id); if (!e) return;
+  if (m.fx) { e.fxEl.classList.toggle("hidden"); return; }
+  if (!m.text.trim() || m.fxBusy) return;
+  m.fxBusy = true;
+  e.fxEl.classList.remove("hidden"); e.fxEl.textContent = "查詢中…";
+  const i = D.msgs.indexOf(m);
+  let prev = ""; for (let k = i - 1; k >= 0; k--) if (D.msgs[k].who === "ai" && D.msgs[k].text.trim()) { prev = D.msgs[k].text.trim(); break; }
+  const prompt = DESK_FIX_PROMPT.replace("PARTNER_LINE", prev ? 'The partner had just said: "' + prev + '"' : "").replace("SENTENCE", m.text.trim().replace(/"/g, "'"));
+  try {
+    const o = parseJson(await geminiGenerate(P.key, FAST_MODELS, prompt, true, true));
+    m.fx = { ok: !!o.ok && !o.better, better: o.better ? String(o.better).trim() : "", why: String(o.why || "").trim() };
+    paintFx(m);
+  } catch (err) { e.fxEl.textContent = "查詢失敗：" + ((err && err.message) || err).toString().slice(0, 120); }
+  m.fxBusy = false;
+}
+function paintFx(m) {
+  const e = msgEls.get(m.id); if (!e || !m.fx) return;
+  e.fxEl.replaceChildren(
+    m.fx.ok ? h("div", { class: "fxok", text: "✓ 這句說得很好" }) : h("div", { class: "fxbetter", text: "更好的說法：" + m.fx.better }),
+    m.fx.why ? h("div", { class: "fxwhy", text: m.fx.why }) : null);
 }
 
 // ---- right panel
@@ -833,7 +986,7 @@ function paintPanel() {
     if (hp.q.length) kids.push(h("div", { class: "sub", style: "font-size:12.5px;margin-top:6px", text: "查過的句子會自動存起來，之後可以拿來複習。" }));
     body.replaceChildren(...kids);
   } else {
-    const secs = ((D.ended ? D.endMs : Date.now()) - D.startMs) / 1000;
+    const secs = activeSec(D, D.ended ? D.endMs : 0);
     const mine = D.msgs.filter(m => m.who === "me" && m.text.trim());
     const words = mine.reduce((n, m) => n + m.text.trim().split(/\s+/).filter(Boolean).length, 0);
     const kids = [
@@ -847,8 +1000,48 @@ function paintPanel() {
   }
 }
 
+// ---- highlight a sentence or a word in the conversation, then tap "存入複習" to keep it in 「我的複習區」
+let saveBtn = null;
+function hideSaveBtn() { if (saveBtn) { saveBtn.remove(); saveBtn = null; } }
+document.addEventListener("mouseup", (e) => {
+  if (e.target && e.target.closest && e.target.closest("#savebtn")) return;
+  setTimeout(() => {
+    hideSaveBtn();
+    const sel = window.getSelection(); if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !D) return;
+    const box = $("msgs"); if (!box) return;
+    const range = sel.getRangeAt(0);
+    if (!box.contains(range.commonAncestorContainer)) return;
+    const text = sel.toString().replace(/\s+/g, " ").trim();
+    if (!text || text.length > 600) return;
+    const node = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+    const msgEl = node && node.closest ? node.closest(".msg") : null;
+    const who = msgEl && msgEl.classList.contains("me") ? "me" : "ai";
+    const r = range.getBoundingClientRect();
+    const d = D;
+    saveBtn = h("button", { class: "savebtn", id: "savebtn", text: "＋ 存入複習", on: {
+      mousedown: (ev) => ev.preventDefault(),
+      click: () => {
+        const added = Saved.add({ ts: Date.now(), text, who, topic: d.topic.label, persona: d.persona.name });
+        toast(added ? "已存入「我的複習區」" : "這個已經存過了");
+        try { window.getSelection().removeAllRanges(); } catch (err) {}
+        hideSaveBtn();
+      } } });
+    document.body.appendChild(saveBtn);
+    const w = saveBtn.offsetWidth || 110;
+    let top = r.top - 44; if (top < 8) top = r.bottom + 8;
+    saveBtn.style.top = Math.round(top) + "px";
+    saveBtn.style.left = Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))) + "px";
+  }, 0);
+});
+document.addEventListener("mousedown", (e) => { if (!(e.target.closest && e.target.closest("#savebtn"))) hideSaveBtn(); });
+document.addEventListener("scroll", hideSaveBtn, true);
+
 // ---- keyboard: Space = start/finish speaking in manual mode (or hold it down to talk)
 document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && D && !D.ended && D.paused && !$("talk").classList.contains("hidden")) {
+    const tg0 = e.target && e.target.tagName;
+    if (tg0 !== "INPUT" && tg0 !== "TEXTAREA" && tg0 !== "SELECT") { e.preventDefault(); if (!e.repeat) resumeTalk(); return; }
+  }
   if (e.code !== "Space" || !D || D.ended || !D.manual || $("talk").classList.contains("hidden")) return;
   const tg = e.target && e.target.tagName;
   if (tg === "INPUT" || tg === "TEXTAREA" || tg === "SELECT") return;

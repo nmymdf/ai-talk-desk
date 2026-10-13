@@ -147,6 +147,7 @@ class LiveSession {
       this.o.onModelChosen(model);
       this.o.onLog("即時連線成功，開始通話");
       this.startAudio().then(() => {
+        if (this.o.onReady) { try { this.o.onReady(); } catch (e) {} }
         if (!this.o.cue) return; // silent hand-over: wait for the learner to speak
         this.sendCue(false);
         setTimeout(() => {
@@ -266,8 +267,15 @@ class LiveSession {
     return this.ctx.currentTime < this.nextTime + 0.35;
   }
 
+  /** Send audio that was captured while the connection was still opening (16 kHz PCM16 chunks). */
+  sendChunks(chunks) {
+    if (this.closed || !this.ready) return;
+    for (const c of chunks) this.send({ realtimeInput: { audio: { mimeType: "audio/pcm;rate=16000", data: b64FromBytes(new Uint8Array(c.buffer, c.byteOffset, c.byteLength)) } } });
+  }
+
   onMic(pcm) {
     if (this.closed || !this.ready) return;
+    { let e = 0; for (let i = 0; i < pcm.length; i++) { const v = pcm[i] / 32768; e += v * v; } const r = Math.sqrt(e / (pcm.length || 1)); this.level = Math.max(r, (this.level || 0) * 0.7); this.levelAt = Date.now(); }
     if (this.o.isMuted()) return;
     if (this.o.manual && !this.talking) return;
     let data = pcm;
@@ -344,15 +352,16 @@ async function discoverTextModels(apiKey) {
   return list;
 }
 
-async function geminiGenerate(apiKey, models, text, json) {
-  return geminiGenerateParts(apiKey, models, [{ text }], json);
+async function geminiGenerate(apiKey, models, text, json, fast) {
+  return geminiGenerateParts(apiKey, models, [{ text }], json, fast);
 }
 
 /** Like geminiGenerate, but the request can carry several parts (text plus audio). */
-async function geminiGenerateParts(apiKey, models, parts, json) {
+async function geminiGenerateParts(apiKey, models, parts, json, fast) {
   let last = null;
   let list = [];
-  try { list = await discoverTextModels(apiKey); } catch (e) { last = e; }
+  // fast = quick one-tap requests (translate / fix): skip the model-list lookup and go straight to the small models
+  if (!fast) { try { list = await discoverTextModels(apiKey); } catch (e) { last = e; } }
   for (const m of models) if (!list.includes(m)) list.push(m);
   for (const m of list) {
     try {

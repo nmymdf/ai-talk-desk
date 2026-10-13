@@ -112,10 +112,10 @@ class MonoRecorder {
     this.src.connect(this.node); this.node.connect(mute);
     this.t0 = ctx.currentTime;
   }
-  stop() {
+  stop(keepStream) {
     const seconds = this.chunks.reduce((a, c) => a + c.length, 0) / 16000;
     try { this.node.port.onmessage = null; this.node.disconnect(); this.src.disconnect(); } catch (e) {}
-    try { this.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    if (!keepStream) { try { this.stream.getTracks().forEach(t => t.stop()); } catch (e) {} }
     return { chunks: this.chunks, meter: this.meter, seconds };
   }
 }

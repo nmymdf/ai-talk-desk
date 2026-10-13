@@ -5,10 +5,51 @@
 
 let reviewTab = "todo";
 
+let reviewSec = "sys";   // "sys" = the mistakes the system found, "mine" = what I saved myself
+
+function buildMine(root) {
+  const all = Saved.all();
+  const todo = all.filter(x => !x.done), done = all.filter(x => x.done);
+  const tabBtn = (id, t) => h("button", { class: "pill" + (mineTab === id ? " on" : ""), text: t, on: { click: () => { mineTab = id; go("review"); } } });
+  root.appendChild(h("div", { class: "tabs" }, tabBtn("todo", "待複習 " + todo.length), tabBtn("done", "已學會 " + done.length)));
+  const list = mineTab === "todo" ? todo : done;
+  if (!list.length) {
+    root.appendChild(card(null, h("div", { class: "sub", style: "padding:14px 4px;line-height:1.8;white-space:pre-line", text: mineTab === "todo"
+      ? "這裡只放你自己存的句子和單字。\n對話中，用滑鼠反白任何一句或一個字，旁邊會跳出「＋ 存入複習」。\n存進來的內容系統不會改動、也不會摘要，備註由你自己寫。" : "還沒有標記為「已學會」的項目。" })));
+    return;
+  }
+  list.forEach(x => {
+    const noteIn = h("textarea", { class: "field mynote", rows: 2, placeholder: "我的備註（中文意思、例句、為什麼存它…）" });
+    noteIn.value = x.note || "";
+    noteIn.addEventListener("input", () => Saved.update(x.id, { note: noteIn.value }));
+    root.appendChild(h("div", { class: "err mine" },
+      h("div", { class: "meta", text: fmtDate(x.ts) + "　" + (x.who === "me" ? "我說的" : "對方說的") + "　" + (x.persona || "") + (x.topic ? " · " + x.topic : "") }),
+      h("div", { class: "better mytext", text: x.text }), noteIn,
+      h("div", { class: "acts" },
+        h("button", { class: "pill", text: x.done ? "移回待複習" : "✓ 已學會", on: { click: () => { Saved.update(x.id, { done: !x.done }); go("review"); } } }),
+        h("button", { class: "pill", text: "🔊 聽", on: { click: () => speakEn(x.text) } }),
+        h("button", { class: "pill", text: "複製", on: { click: () => copyText(x.text + (noteIn.value ? "\n" + noteIn.value : "")) } }),
+        h("button", { class: "pill", text: "刪除", on: { click: () => { Saved.remove(x.id); go("review"); } } }))));
+  });
+  root.appendChild(h("div", { style: "max-width:240px;margin-top:8px;display:flex;flex-direction:column;gap:8px" },
+    h("button", { class: "btn", text: "複製全部", on: { click: () => copyText(list.map(x => x.text + (x.note ? "\n  " + x.note : "")).join("\n\n")) } }),
+    h("button", { class: "btn danger", text: "清除我的複習區", on: { click: () =>
+      modal("清除我的複習區？", h("div", { class: "sub", text: "你存的所有句子和備註都會刪除，無法復原。" }), [{ text: "取消" }, { text: "清除", primary: true, onClick: () => { Saved.clear(); go("review"); } }]) } })));
+}
+let mineTab = "todo";
+
 function buildReview(root) {
+  root.appendChild(h("div", { class: "pagehead" }, h("h1", { text: "複習" }), h("span", { class: "sub", text: reviewSec === "mine" ? "你自己反白存下來的句子和單字" : "每次對話結束後，系統挑出的重點" })));
+  root.appendChild(h("div", { class: "tabs secs" },
+    h("button", { class: "pill" + (reviewSec === "sys" ? " on" : ""), id: "secsys", text: "系統找的錯誤", on: { click: () => { reviewSec = "sys"; go("review"); } } }),
+    h("button", { class: "pill" + (reviewSec === "mine" ? " on" : ""), id: "secmine", text: "我的複習區 " + Saved.all().filter(x => !x.done).length, on: { click: () => { reviewSec = "mine"; go("review"); } } })));
+  if (reviewSec === "mine") { buildMine(root); return; }
+  buildSysReview(root);
+}
+
+function buildSysReview(root) {
   const all = Errs.all();
   const todo = all.filter(e => !e.done), done = all.filter(e => e.done);
-  root.appendChild(h("div", { class: "pagehead" }, h("h1", { text: "錯誤複習" }), h("span", { class: "sub", text: "每次對話結束後挑出的重點，都會存在這裡" })));
 
   const tabBtn = (id, t) => h("button", { class: "pill" + (reviewTab === id ? " on" : ""), text: t, on: { click: () => { reviewTab = id; go("review"); } } });
   root.appendChild(h("div", { class: "tabs" },

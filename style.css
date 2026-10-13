@@ -141,7 +141,7 @@ pre.log { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: 
 .msg .bub { padding: 12px 16px; border-radius: 18px; font-size: 18px; line-height: 1.55; background: #1C2748; border-top-left-radius: 6px; }
 .msg.me .bub { background: #8E7420; color: #fff; border-top-left-radius: 18px; border-top-right-radius: 6px; }
 .msg .tr { margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,.22); font-size: 15px; color: #BFD0F5; }
-.msg .tbtn { flex: none; align-self: center; width: 30px; height: 30px; border-radius: 50%; background: #1A2440; color: var(--sub); font-size: 12px; font-weight: 700; border: 1px solid var(--stroke); }
+.msg .tbtn { flex: none; align-self: center; height: 28px; padding: 0 11px; border-radius: 14px; background: #1A2440; color: var(--sub); font-size: 13px; font-weight: 700; border: 1px solid var(--stroke); white-space: nowrap; }
 .msg .tbtn:hover { color: var(--gold); border-color: var(--gold); }
 .msg.live .bub::after { content: "▍"; color: var(--gold); margin-left: 2px; animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
@@ -218,3 +218,17 @@ pre.log { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: 
 .modal .btns { position: sticky; bottom: -22px; background: var(--card); padding: 12px 0 2px; margin-bottom: -2px; }
 .warmitem { padding: 10px 14px !important; margin-top: 8px; }
 .warmitem .why { margin-top: 2px; }
+
+/* ---- v2.0 */
+.cbar .talkgrp { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.wavebox { display: flex; align-items: center; gap: 10px; opacity: 0; transition: opacity .15s; min-width: 150px; justify-content: flex-end; }
+.wavebox.on { opacity: 1; }
+.wavebox .wt { color: var(--gold); font-weight: 700; font-size: 16px; font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
+.wavebox .wave { width: 120px; height: 30px; }
+.msg .tr.fx .fxbetter { color: #FFE9A8; font-size: 16px; }
+.msg .tr.fx .fxok { color: #9BE3A8; }
+.msg .tr.fx .fxwhy { margin-top: 4px; font-size: 14px; color: #BFD0F5; }
+.savebtn { position: fixed; z-index: 60; height: 34px; padding: 0 14px; border-radius: 17px; background: var(--gold); color: #1A1405; font-weight: 700; font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.45); }
+.tabs.secs { margin-bottom: 4px; }
+.err.mine .mytext { font-size: 19px; margin: 6px 0 8px; user-select: text; }
+.mynote { width: 100%; resize: vertical; font-size: 14px; }

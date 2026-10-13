@@ -577,3 +577,13 @@ const MONO_PROMPTS = [
   { en: "Talk about a place in your city that visitors should see.", zh: "介紹你的城市裡值得遊客去的地方。" },
   { en: "Explain how to do something you are good at, step by step.", zh: "一步一步說明一件你拿手的事怎麼做。" }
 ];
+
+
+const DESK_FIX_PROMPT = `
+An English learner (a native Chinese speaker) said ONE sentence in a spoken English conversation. It was transcribed automatically, so ignore capitalisation, punctuation and anything that might just be a recognition error.
+PARTNER_LINE
+Learner's sentence: "SENTENCE"
+
+Say how a native speaker would naturally say it with the same meaning. If the sentence is already correct and natural, say so.
+Return ONLY JSON: {"ok":true or false,"better":"the better version (null if the sentence is already fine)","why":"one short, kind reason in Traditional Chinese"}
+`.trim();
